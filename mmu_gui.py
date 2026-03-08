@@ -45,6 +45,22 @@ COLORES_PROCESO = {
     "spotify":   "#1DB954",
     "zoom":      "#2D8CFF",
     "discord":   "#5865F2",
+    # Juegos y apps pesadas
+    "minecraft": "#6B8E23",
+    "java":      "#5382A1",
+    "photoshop": "#001E36",
+    "premiere":  "#E77CFF",
+    "aftereffects": "#CF96FD",
+    "unity":     "#222222",
+    "unreal":    "#0D47A1",
+    "steam":     "#1B2838",
+    "valorant":  "#FF4655",
+    "gta":       "#F7921E",
+    "cyberpunk": "#00B4D8",
+    "fortnite":  "#9B59B6",
+    "obs":       "#302E31",
+    "davinci":   "#233A52",
+    "illustrator": "#FF7C00",
 }
 PALETA = [
     "#4285F4","#FF6B35","#A259FF","#2D9436",
@@ -133,7 +149,8 @@ class ProcSim:
         self.color  = color
         self.icono  = icono
         # numero de paginas virtuales proporcional a la memoria
-        self.num_paginas = max(4, min(20, int(mem_mb / 50)))
+        # Juegos/apps pesadas tienen muchas más páginas (1 GB = ~12 páginas)
+        self.num_paginas = max(6, min(40, int(mem_mb / 120)))
         self.paginas = [f"P{pid}:{i}" for i in range(self.num_paginas)]
 
 # ─────────────────────── TLB ─────────────────────────────────────────────────
@@ -228,10 +245,20 @@ class Motor:
         return self.tabla[llave]
 
     # ── recolectar procesos reales ──────────────────────────────────────────
+    # Palabras clave de apps "pesadas" que merecen simularse
+    _APPS_PESADAS = {
+        "minecraft","java","terraria","valheim","gta","cyberpunk","valorant",
+        "fortnite","steam","unreal","photoshop","lightroom","illustrator",
+        "premiere","aftereffects","davinci","blender","cinema","maya","houdini",
+        "unity","godot","obs","shadowplay","streamlabs","figma","xcode",
+        "android studio","intellij","eclipse","resolve","3ds max","zbrush",
+    }
+
     def recolectar_procesos(self) -> List[dict]:
         resultados = []
         IGNORAR = {"launchd","kernel_task","WindowServer","loginwindow",
-                   "mds","mds_stores","distnoted","cfprefsd"}
+                   "mds","mds_stores","distnoted","cfprefsd","UserEventAgent",
+                   "coreaudiod","bird","cloudd","rapportd","trustd","syspolicyd"}
         procs = []
         try:
             for p in psutil.process_iter(["pid", "name", "memory_info"]):
@@ -248,13 +275,31 @@ class Motor:
             procs = procs[:10]
         except Exception:
             pass
-        if not procs:
-            procs = [(1, "Chrome", 400*1024*1024), (2, "Safari", 250*1024*1024),
-                     (3, "Figma", 180*1024*1024), (4, "VSCode", 150*1024*1024)]
+
+        # Si no hay apps pesadas reconocidas, usar perfiles de juegos/apps
+        tiene_app_pesada = any(
+            any(kw in nombre.lower() for kw in self._APPS_PESADAS)
+            for _, nombre, _ in procs
+        )
+        if not procs or not tiene_app_pesada:
+            # Fallback: simular escenario típico de gamer/creador de contenido
+            procs = [
+                (1,  "Minecraft",       2048*1024*1024),   # 2 GB
+                (2,  "Photoshop",       1800*1024*1024),   # 1.8 GB
+                (3,  "Blender",         1400*1024*1024),   # 1.4 GB
+                (4,  "Unity Editor",    1100*1024*1024),   # 1.1 GB
+                (5,  "OBS Studio",       600*1024*1024),   # 600 MB
+                (6,  "Discord",          300*1024*1024),   # 300 MB
+            ]
         ICONOS = {"chrome":"🌐","safari":"🧭","firefox":"🦊","figma":"🎨",
                   "code":"💻","cursor":"💻","node":"🟢","python":"🐍",
                   "terminal":"⬛","slack":"💬","spotify":"🎵","zoom":"📹",
-                  "blender":"🎬","discord":"💬"}
+                  "blender":"🎬","discord":"💬",
+                  "minecraft":"⛏️","java":"☕","photoshop":"🖼️",
+                  "premiere":"🎬","aftereffects":"✨","unity":"🎮",
+                  "unreal":"🎮","steam":"🎮","valorant":"🎯","gta":"🚗",
+                  "cyberpunk":"🤖","fortnite":"🏆","obs":"📡",
+                  "davinci":"🎞️","illustrator":"🖌️"}
         def icono(n):
             nl = n.lower()
             for k,v in ICONOS.items():
@@ -273,9 +318,113 @@ class Motor:
         return resultados_obj, resultados
 
     # ── generar cadena de referencias ──────────────────────────────────────
+    def _desc_acceso(self, nombre: str, tipo: str) -> str:
+        """Genera descripciones realistas según el tipo de app/juego."""
+        n = nombre.lower()
+        descripciones = {
+            "juego_textura":   [
+                "Cargar textura diffuse 4K (64 MB)",
+                "Cargar normal map del terreno",
+                "Streaming de textura de personaje",
+                "LOD: textura de baja resolución distante",
+                "Cargar skybox HDR",
+            ],
+            "juego_mundo":     [
+                "Generar chunk del mundo (16x16x256)",
+                "Cargar datos de bioma vecino",
+                "Actualizar mapa de altura del terreno",
+                "Serializar chunk al disco (guardado)",
+                "Deserializar chunk desde disco",
+            ],
+            "juego_fisica":    [
+                "Calcular colisiones físicas (broadphase)",
+                "Actualizar árbol BVH de objetos",
+                "Simular física de cuerpo rígido",
+                "Raycast de proyectiles en escena",
+                "Actualizar posición de NPC (pathfinding)",
+            ],
+            "juego_audio":     [
+                "Buffer de audio PCM (música de fondo)",
+                "Cargar efecto de sonido (disparo/golpe)",
+                "Mezclar canales de audio (spatializado)",
+            ],
+            "juego_red":       [
+                "Recibir paquete de estado del servidor",
+                "Enviar input del jugador al servidor",
+                "Sincronizar posición de entidades remotas",
+            ],
+            "img_capa":        [
+                "Buffer de capa de 16K x 16K px",
+                "Smart Object: leer datos embebidos",
+                "Aplicar filtro Gaussian Blur en memoria",
+                "Histórico de deshacer (16 MB)",
+                "Guardar TIFF sin comprimir al disco",
+            ],
+            "img_render":      [
+                "Renderizar composición final (RAW)",
+                "Exportar JPEG con perfil de color",
+                "Color grading LUT en memoria GPU",
+                "Cargar preset de Camera Raw",
+            ],
+            "render3d_mesh":   [
+                "Cargar malla 3D (1.2M polígonos)",
+                "Subdivisión de superficie (Catmull-Clark)",
+                "Calcular normales suavizadas",
+                "Importar FBX con esqueleto de animación",
+                "Aplicar modificador Boolean en memoria",
+            ],
+            "render3d_render": [
+                "Path tracing: acumular muestra #1024",
+                "Denoising: buffer de iluminación global",
+                "Calcular sombras de área (soft shadows)",
+                "BVH traversal: escena completa",
+                "Guardar EXR de 32 bits al disco",
+            ],
+            "motor_script":    [
+                "Compilar C# → IL → código nativo (JIT)",
+                "Cargar asset bundle de escena",
+                "Instanciar prefab complejo en runtime",
+                "Actualizar sistema de partículas (VFX)",
+                "Serializar estado de escena (autosave)",
+            ],
+            "motor_shader":    [
+                "Compilar shader HLSL para GPU",
+                "Cargar pipeline de renderizado (PSO)",
+                "Actualizar constant buffer (matrices MVP)",
+            ],
+            "stream_encode":   [
+                "Encodear frame H.264 (CPU software)",
+                "Capturar frame del escritorio (GDI)",
+                "Escribir segmento RTMP al buffer",
+                "Escalar resolución 4K → 1080p",
+            ],
+            "generico":        [
+                "Leer configuración de usuario",
+                "Actualizar interfaz gráfica (UI redraw)",
+                "Procesar evento de entrada (teclado/mouse)",
+                "Enviar IPC al sistema operativo",
+            ],
+        }
+        # Clasificar la app y elegir categoría
+        if any(x in n for x in ["minecraft","java","terraria","valheim","gta","cyberpunk","valorant","fortnite","steam","unreal"]):
+            cats = ["juego_textura","juego_mundo","juego_fisica","juego_audio","juego_red"]
+        elif any(x in n for x in ["photoshop","illustrator","lightroom","gimp","affinity","paint"]):
+            cats = ["img_capa","img_render","generico"]
+        elif any(x in n for x in ["blender","cinema","houdini","3ds","maya","zbrush"]):
+            cats = ["render3d_mesh","render3d_render","generico"]
+        elif any(x in n for x in ["unity","godot","unreal","engine"]):
+            cats = ["motor_script","motor_shader","juego_fisica","generico"]
+        elif any(x in n for x in ["obs","shadowplay","streamlabs","davinci","premiere","aftereffects"]):
+            cats = ["stream_encode","img_render","generico"]
+        else:
+            cats = ["generico","img_render","juego_audio"]
+        cat = random.choice(cats)
+        return random.choice(descripciones[cat])
+
     def generar_cadena(self, procs: List[ProcSim]) -> Tuple[List[str], List[dict]]:
         cadena: List[str] = []
         meta  : List[dict] = []
+
         def acc(p: ProcSim, pag_idx: int, escritura: bool, desc: str):
             llave = p.paginas[pag_idx % p.num_paginas]
             cadena.append(llave)
@@ -283,45 +432,69 @@ class Motor:
                          "proc_icono": p.icono, "llave": llave,
                          "pag_idx": pag_idx % p.num_paginas,
                          "escritura": escritura, "desc": desc})
+
         if not procs:
             return [], []
+
+        # Usar hasta 4 procesos para la secuencia narrativa
         p0 = procs[0]
         p1 = procs[1] if len(procs) > 1 else procs[0]
         p2 = procs[2] if len(procs) > 2 else procs[0]
         p3 = procs[3] if len(procs) > 3 else procs[0]
+        p4 = procs[4] if len(procs) > 4 else procs[0]
+        p5 = procs[5] if len(procs) > 5 else procs[0]
 
-        # Fase 1: cargar paginas iniciales (llenar RAM)
-        acc(p0,0,False,f"{p0.nombre}: cargar codigo principal")
-        acc(p0,1,False,f"{p0.nombre}: cargar datos de inicio")
-        acc(p1,0,False,f"{p1.nombre}: iniciar proceso")
-        acc(p2,0,False,f"{p2.nombre}: cargar libreria UI")
-        acc(p0,2,True, f"{p0.nombre}: escribir en heap")
-        acc(p1,1,False,f"{p1.nombre}: leer configuracion")
-        # Fase 2: TLB hits
-        acc(p0,0,False,f"{p0.nombre}: releer codigo (TLB hit esperado)")
-        acc(p1,0,True, f"{p1.nombre}: modificar datos (D=1)")
-        # Fase 3: RAM se llena - primer reemplazo
-        acc(p3,0,False,f"{p3.nombre}: nuevo proceso entra a RAM -> LLENA")
-        acc(p0,3,False,f"{p0.nombre}: nueva pestaña / nuevo modulo")
-        # Fase 4: reemplazos con paginas sucias
-        acc(p2,1,True, f"{p2.nombre}: render frame -> D=1")
-        acc(p1,2,False,f"{p1.nombre}: leer cache")
-        acc(p3,1,True, f"{p3.nombre}: compilar / procesar -> D=1")
-        acc(p0,4,False,f"{p0.nombre}: cargar plugin / extension")
-        # Fase 5: presion maxima
-        acc(p2,2,True, f"{p2.nombre}: segundo frame de render -> D=1")
-        acc(p0,5,False,f"{p0.nombre}: nueva tab del navegador")
-        acc(p1,3,True, f"{p1.nombre}: guardar documento")
-        acc(p3,2,False,f"{p3.nombre}: leer assets / recursos")
-        # Fase 6: reaccesos (algunos TLB hit)
-        acc(p0,0,False,f"{p0.nombre}: volver al codigo base")
-        acc(p1,0,False,f"{p1.nombre}: volver al inicio del proceso")
-        acc(p2,0,False,f"{p2.nombre}: reiniciar render loop")
-        acc(p0,2,True, f"{p0.nombre}: heap otra vez (ya debe estar sucia)")
-        acc(p3,0,False,f"{p3.nombre}: releer codigo base")
-        acc(p0,6,False,f"{p0.nombre}: cargar otro modulo pesado")
-        acc(p1,4,True, f"{p1.nombre}: buffer de video / audio -> D=1")
-        acc(p2,3,False,f"{p2.nombre}: textura GPU / shader")
+        # ── Fase 1: Arranque — cada app carga sus páginas iniciales ──────────
+        acc(p0, 0, False, f"{p0.nombre}: inicializar motor/engine (código base)")
+        acc(p0, 1, False, f"{p0.nombre}: {self._desc_acceso(p0.nombre, 'init')}")
+        acc(p1, 0, False, f"{p1.nombre}: inicializar motor/engine (código base)")
+        acc(p2, 0, False, f"{p2.nombre}: inicializar motor/engine (código base)")
+        acc(p0, 2, True,  f"{p0.nombre}: {self._desc_acceso(p0.nombre, 'write')}")
+        acc(p1, 1, False, f"{p1.nombre}: {self._desc_acceso(p1.nombre, 'read')}")
+
+        # ── Fase 2: TLB hits — re-acceso a páginas ya cargadas ───────────────
+        acc(p0, 0, False, f"{p0.nombre}: re-acceso código base (TLB hit esperado)")
+        acc(p1, 0, True,  f"{p1.nombre}: modificar buffer de trabajo (D=1)")
+        acc(p0, 1, False, f"{p0.nombre}: re-leer configuración cargada (TLB hit)")
+
+        # ── Fase 3: Nuevos procesos entran — RAM se llena ────────────────────
+        acc(p3, 0, False, f"{p3.nombre}: inicializar — RAM comienza a llenarse")
+        acc(p0, 3, False, f"{p0.nombre}: {self._desc_acceso(p0.nombre, 'load')}")
+        acc(p3, 1, True,  f"{p3.nombre}: {self._desc_acceso(p3.nombre, 'write')}")
+        acc(p1, 2, False, f"{p1.nombre}: {self._desc_acceso(p1.nombre, 'load')}")
+
+        # ── Fase 4: RAM LLENA — empiezan los reemplazos ───────────────────────
+        acc(p4, 0, False, f"{p4.nombre}: inicializar — RAM LLENA, se necesita reemplazo")
+        acc(p0, 4, True,  f"{p0.nombre}: {self._desc_acceso(p0.nombre, 'write')} (D=1)")
+        acc(p2, 1, True,  f"{p2.nombre}: {self._desc_acceso(p2.nombre, 'write')} (D=1)")
+        acc(p3, 2, False, f"{p3.nombre}: {self._desc_acceso(p3.nombre, 'load')}")
+        acc(p1, 3, True,  f"{p1.nombre}: escribir resultado al buffer de salida (D=1)")
+
+        # ── Fase 5: Presión máxima de memoria ────────────────────────────────
+        acc(p5, 0, False, f"{p5.nombre}: conectar — máxima presión de memoria")
+        acc(p0, 5, False, f"{p0.nombre}: {self._desc_acceso(p0.nombre, 'load')}")
+        acc(p2, 2, True,  f"{p2.nombre}: {self._desc_acceso(p2.nombre, 'write')} (D=1)")
+        acc(p4, 1, False, f"{p4.nombre}: {self._desc_acceso(p4.nombre, 'load')}")
+        acc(p3, 3, True,  f"{p3.nombre}: {self._desc_acceso(p3.nombre, 'write')} (D=1)")
+        acc(p5, 1, False, f"{p5.nombre}: {self._desc_acceso(p5.nombre, 'load')}")
+
+        # ── Fase 6: Reaccesos — algunas páginas vuelven (TLB miss → RAM hit) ─
+        acc(p0, 0, False, f"{p0.nombre}: volver al código base (puede estar swapped)")
+        acc(p1, 0, False, f"{p1.nombre}: recuperar estado inicial del proceso")
+        acc(p2, 0, False, f"{p2.nombre}: reiniciar loop principal")
+        acc(p0, 2, True,  f"{p0.nombre}: {self._desc_acceso(p0.nombre, 'write')} (página sucia)")
+        acc(p3, 0, False, f"{p3.nombre}: re-acceso al código base")
+
+        # ── Fase 7: Carga pesada final — muchos reemplazos seguidos ──────────
+        acc(p0, 6, False, f"{p0.nombre}: {self._desc_acceso(p0.nombre, 'heavy')}")
+        acc(p1, 4, True,  f"{p1.nombre}: {self._desc_acceso(p1.nombre, 'write')} (D=1)")
+        acc(p2, 3, False, f"{p2.nombre}: {self._desc_acceso(p2.nombre, 'load')}")
+        acc(p4, 2, True,  f"{p4.nombre}: {self._desc_acceso(p4.nombre, 'write')} (D=1)")
+        acc(p0, 7, False, f"{p0.nombre}: {self._desc_acceso(p0.nombre, 'load')}")
+        acc(p5, 2, True,  f"{p5.nombre}: {self._desc_acceso(p5.nombre, 'write')} (D=1)")
+        acc(p3, 4, False, f"{p3.nombre}: {self._desc_acceso(p3.nombre, 'load')}")
+        acc(p1, 5, False, f"{p1.nombre}: {self._desc_acceso(p1.nombre, 'load')}")
+
         return cadena, meta
 
     # ── inicializar simulacion ──────────────────────────────────────────────
