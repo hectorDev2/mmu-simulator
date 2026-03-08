@@ -557,6 +557,44 @@ class Motor:
                      for p in self.procesos]
         total_tlb = self.stats["tlb_hits"] + self.stats["tlb_misses"]
         total_acc = self.stats["accesos"]
+
+        # PTBR: proceso cuya tabla de páginas está siendo consultada ahora
+        ptbr_data = None
+        if 0 <= self.paso < len(self.acceso_meta):
+            llave_cur = self.cadena[self.paso]
+            parts_cur = llave_cur.split(":")
+            pid_s_cur = parts_cur[0]
+            pag_cur   = parts_cur[1] if len(parts_cur) > 1 else "?"
+            proc_cur  = next((p for p in self.procesos if f"P{p.pid}" == pid_s_cur), None)
+            if proc_cur:
+                ptbr_data = {"pid": proc_cur.pid, "nombre": proc_cur.nombre,
+                             "color": proc_cur.color, "icono": proc_cur.icono,
+                             "pag_actual": pag_cur}
+
+        # Tabla de páginas completa agrupada por proceso
+        tabla_procs: Dict[int, dict] = {}
+        for llave, pte in self.tabla.items():
+            parts = llave.split(":")
+            pid_s = parts[0]
+            pag_n = parts[1] if len(parts) > 1 else "0"
+            proc  = next((p for p in self.procesos if f"P{p.pid}" == pid_s), None)
+            if not proc:
+                continue
+            if proc.pid not in tabla_procs:
+                tabla_procs[proc.pid] = {"pid": proc.pid, "nombre": proc.nombre,
+                                         "color": proc.color, "icono": proc.icono,
+                                         "entradas": []}
+            tabla_procs[proc.pid]["entradas"].append({
+                "llave": llave,
+                "pag":   int(pag_n) if pag_n.isdigit() else 0,
+                "marco": pte.marco,
+                "presente":   pte.presente,
+                "sucio":      pte.sucio,
+                "referencia": pte.referencia,
+            })
+        for v in tabla_procs.values():
+            v["entradas"].sort(key=lambda e: e["pag"])
+
         return {
             "paso": self.paso,
             "total_pasos": len(self.cadena),
@@ -567,6 +605,8 @@ class Motor:
             "tlb": self.tlb.to_list() if self.tlb else [],
             "tlb_cap": self.tlb.cap if self.tlb else 0,
             "procesos": proc_json,
+            "ptbr": ptbr_data,
+            "tabla_procesos": list(tabla_procs.values()),
             "stats": {**self.stats,
                       "tlb_hit_pct": round(self.stats["tlb_hits"]/total_tlb*100,1) if total_tlb else 0,
                       "fault_pct":   round(self.stats["faults"]/total_acc*100,1)   if total_acc else 0},
@@ -785,7 +825,7 @@ def api_reset():
     return jsonify({"ok": True, "procesos": procs})
 
 # ─────────────────────── HTML / CSS / JS ─────────────────────────────────────
-HTML_PAGE = """<!DOCTYPE html>
+HTML_PAGE = r"""<!DOCTYPE html>
 <html lang="es">
 <head>
 <meta charset="UTF-8">
@@ -798,18 +838,18 @@ HTML_PAGE = """<!DOCTYPE html>
   --border:#30363d;--text:#e6edf3;--text2:#8b949e;--text3:#6e7681;
   --green:#3fb950;--red:#f85149;--yellow:#d29922;--blue:#58a6ff;
   --purple:#bc8cff;--cyan:#39c5cf;--orange:#f0883e;
-  --radius:8px;--shadow:0 4px 24px rgba(0,0,0,.5);
+  --radius:8px;
 }
 body{background:var(--bg);color:var(--text);font-family:'SF Mono',Monaco,Consolas,monospace;font-size:13px;min-height:100vh}
 h1,h2,h3{font-weight:600}
 .app{display:grid;grid-template-rows:auto 1fr auto;height:100vh;overflow:hidden}
 
 /* HEADER */
-.header{background:var(--bg2);border-bottom:1px solid var(--border);padding:12px 20px;display:flex;align-items:center;gap:16px;flex-wrap:wrap}
-.header h1{font-size:16px;color:var(--blue);white-space:nowrap}
+.header{background:var(--bg2);border-bottom:1px solid var(--border);padding:10px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.header h1{font-size:15px;color:var(--blue);white-space:nowrap}
 .header h1 span{color:var(--text2);font-weight:400}
-.controls{display:flex;gap:8px;align-items:center;flex:1;flex-wrap:wrap}
-.btn{padding:6px 14px;border:1px solid var(--border);border-radius:6px;background:var(--bg3);color:var(--text);cursor:pointer;font-size:12px;font-family:inherit;transition:all .15s}
+.controls{display:flex;gap:6px;align-items:center;flex:1;flex-wrap:wrap}
+.btn{padding:5px 12px;border:1px solid var(--border);border-radius:6px;background:var(--bg3);color:var(--text);cursor:pointer;font-size:12px;font-family:inherit;transition:all .15s}
 .btn:hover{background:var(--bg4);border-color:var(--text3)}
 .btn.primary{background:#238636;border-color:#2ea043;color:#fff}
 .btn.primary:hover{background:#2ea043}
@@ -817,138 +857,169 @@ h1,h2,h3{font-weight:600}
 .btn.danger:hover{background:#da3633}
 .btn:disabled{opacity:.4;cursor:not-allowed}
 .speed-label{color:var(--text2);font-size:11px;white-space:nowrap}
-select{background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:5px 8px;border-radius:6px;font-size:12px;font-family:inherit}
-.chip{padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600;white-space:nowrap}
-.chip.fault{background:#6e1a1a;color:#f85149}
-.chip.hit{background:#0f3d1f;color:#3fb950}
-.chip.ok{background:#0d2137;color:#58a6ff}
+select{background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:6px;font-size:12px;font-family:inherit}
+.auto-indicator{width:8px;height:8px;border-radius:50%;background:var(--green);animation:pulse .8s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
 
-/* MAIN GRID */
-.main{display:grid;grid-template-columns:220px 1fr 260px;overflow:hidden}
-.panel{border-right:1px solid var(--border);overflow-y:auto;padding:14px}
+/* MAIN 3-COL GRID */
+.main{display:grid;grid-template-columns:250px 1fr 280px;overflow:hidden}
+.panel{border-right:1px solid var(--border);overflow-y:auto;padding:12px}
 .panel:last-child{border-right:none}
-.panel-title{font-size:11px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.08em;margin-bottom:10px;display:flex;align-items:center;gap:6px}
-.dot{width:8px;height:8px;border-radius:50%;background:currentColor;flex-shrink:0}
+.panel-title{font-size:10px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px;display:flex;align-items:center;gap:6px}
 
 /* PROCESOS */
-.proc-item{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:6px;margin-bottom:4px;background:var(--bg2);border:1px solid var(--border);cursor:default;transition:background .15s}
-.proc-item:hover{background:var(--bg3)}
-.proc-dot{width:12px;height:12px;border-radius:3px;flex-shrink:0}
-.proc-info{flex:1;min-width:0}
-.proc-name{font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.proc-mem{font-size:10px;color:var(--text3)}
-.proc-pages{font-size:10px;color:var(--text3)}
+.proc-item{display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:6px;margin-bottom:3px;background:var(--bg2);border:1px solid var(--border)}
+.proc-swatch{width:10px;height:10px;border-radius:2px;flex-shrink:0}
+.proc-name{font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.proc-sub{font-size:9px;color:var(--text3)}
 
-/* CENTRO: EVENTO + RAM */
-.center{display:flex;flex-direction:column;gap:0;overflow:hidden}
-.evento-box{padding:14px 18px;border-bottom:1px solid var(--border);flex-shrink:0;min-height:160px}
-.evento-tipo{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px}
+/* RAM usage bar */
+.ram-usage-box{margin-top:8px;padding:8px;background:var(--bg2);border-radius:6px;border:1px solid var(--border)}
+
+/* PTBR */
+.ptbr-section{margin-top:10px}
+.ptbr-reg-box{background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:7px 10px;display:flex;align-items:center;gap:8px;margin-bottom:3px;transition:border-color .3s}
+.ptbr-reg-box.active{border-color:var(--blue);box-shadow:0 0 8px rgba(88,166,255,.25)}
+.ptbr-reg-label{font-size:9px;font-weight:700;color:var(--text3);background:var(--bg4);padding:2px 5px;border-radius:3px;letter-spacing:.05em;flex-shrink:0}
+.ptbr-reg-val{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:700;min-width:0}
+.ptbr-connector{text-align:center;color:var(--text3);font-size:16px;line-height:1;margin:2px 6px}
+.pt-box{background:var(--bg2);border:1px solid var(--border);border-radius:6px;overflow:hidden}
+.pt-header{padding:4px 8px;font-size:9px;font-weight:700;text-transform:uppercase;color:var(--text3);letter-spacing:.08em;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:6px}
+.pt-entries{padding:4px;max-height:200px;overflow-y:auto}
+.pt-row{display:flex;align-items:center;gap:3px;padding:3px 5px;border-radius:4px;margin-bottom:1px;font-size:10px;border-left:2px solid transparent;transition:all .3s}
+.pt-row.en-ram{border-left-color:var(--green);background:rgba(63,185,80,.06)}
+.pt-row.en-disco{color:var(--text3);border-left-color:transparent}
+.pt-row.activa{background:rgba(88,166,255,.15);border-left-color:var(--blue);animation:ptPulse .6s ease}
+@keyframes ptPulse{0%,100%{}50%{box-shadow:0 0 8px rgba(88,166,255,.5)}}
+.pt-pag{font-weight:700;width:34px;flex-shrink:0}
+.pt-arrow{color:var(--text3);margin:0 2px}
+.pt-dest{font-weight:700;width:58px;color:var(--blue)}
+.pt-dest.disk{color:var(--text3)}
+.pt-bits{display:flex;gap:2px;margin-left:auto}
+.pt-bit{font-size:8px;padding:1px 3px;border-radius:2px;font-weight:700}
+.pt-bit.P1{background:rgba(63,185,80,.25);color:var(--green)}
+.pt-bit.D1{background:rgba(240,136,62,.25);color:var(--orange)}
+.pt-bit.R1{background:rgba(210,153,34,.25);color:var(--yellow)}
+.pt-bit.off{background:rgba(255,255,255,.06);color:var(--text3)}
+
+/* CENTRO */
+.center{display:flex;flex-direction:column;overflow:hidden}
+.evento-box{padding:12px 16px;border-bottom:1px solid var(--border);flex-shrink:0;min-height:155px}
+.evento-tipo{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px}
 .evento-tipo.fault{color:var(--red)}
 .evento-tipo.tlb_hit{color:var(--green)}
 .evento-tipo.acceso{color:var(--blue)}
 .evento-tipo.reemplazo{color:var(--orange)}
 .evento-tipo.inicio{color:var(--text2)}
-.evento-heading{font-size:18px;font-weight:700;margin-bottom:6px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-.evento-desc{color:var(--text2);font-size:12px;margin-bottom:10px}
-.evento-flujo{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px}
-.flujo-item{padding:4px 10px;border-radius:20px;font-size:12px;background:var(--bg3);border:1px solid var(--border)}
-.flujo-arrow{color:var(--text3);font-size:16px}
-.bits-row{display:flex;gap:8px;flex-wrap:wrap}
-.bit{padding:3px 10px;border-radius:20px;font-size:11px;font-weight:700}
-.bit-P1{background:#0f3d1f;color:#3fb950}
-.bit-P0{background:#3d0f0f;color:#f85149}
-.bit-D1{background:#3d220f;color:#f0883e}
-.bit-D0{background:#1a1f2e;color:var(--text3)}
-.bit-R1{background:#2a2014;color:#d29922}
-.bit-R0{background:#1a1f2e;color:var(--text3)}
+.evento-heading{font-size:17px;font-weight:700;margin-bottom:5px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.evento-desc{color:var(--text2);font-size:12px;margin-bottom:8px}
+.flujo-row{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:7px}
+.flujo-box{padding:3px 9px;border-radius:20px;font-size:11px;background:var(--bg3);border:1px solid var(--border)}
+.flujo-arrow{color:var(--text3);font-size:14px}
+.bits-row{display:flex;gap:7px;flex-wrap:wrap}
+.bit{padding:2px 9px;border-radius:20px;font-size:11px;font-weight:700}
+.bit.P1{background:#0f3d1f;color:var(--green)}
+.bit.P0{background:#3d0f0f;color:var(--red)}
+.bit.D1{background:#3d220f;color:var(--orange)}
+.bit.D0{background:#1a1f2e;color:var(--text3)}
+.bit.R1{background:#2a2014;color:var(--yellow)}
+.bit.R0{background:#1a1f2e;color:var(--text3)}
+.badge{display:inline-flex;align-items:center;gap:4px;padding:2px 7px;border-radius:4px;font-size:10px}
+.badge.disk{background:rgba(248,81,73,.15);border:1px solid rgba(248,81,73,.3);color:var(--red)}
+.badge.write{background:rgba(240,136,62,.15);border:1px solid rgba(240,136,62,.3);color:var(--orange)}
 
-/* RAM GRID */
-.ram-area{flex:1;overflow-y:auto;padding:14px 18px}
-.ram-title{font-size:11px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.08em;margin-bottom:10px}
-.ram-grid{display:grid;gap:8px;grid-template-columns:repeat(auto-fill,minmax(110px,1fr))}
-.frame-card{border-radius:var(--radius);border:2px solid transparent;padding:10px;position:relative;transition:all .4s;cursor:default;min-height:90px}
-.frame-card.libre{background:var(--bg2);border-color:var(--border)}
-.frame-card.ocupado{border-color:rgba(255,255,255,.15)}
-.frame-num{font-size:10px;color:rgba(255,255,255,.5);margin-bottom:4px}
-.frame-proc{font-size:12px;font-weight:700;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.frame-pag{font-size:11px;color:rgba(255,255,255,.7);margin-bottom:6px}
-.frame-bits{display:flex;gap:3px;flex-wrap:wrap}
-.fb{font-size:10px;padding:1px 5px;border-radius:10px;font-weight:700}
-.fb-P1{background:rgba(63,185,80,.25);color:#3fb950}
-.fb-D1{background:rgba(240,136,62,.25);color:#f0883e}
-.fb-R1{background:rgba(210,153,34,.25);color:#d29922}
-.fb-off{background:rgba(255,255,255,.07);color:rgba(255,255,255,.3)}
-.frame-addr{font-size:9px;color:rgba(255,255,255,.3);margin-top:4px;word-break:break-all}
-.frame-card.flash-fault{animation:flashFault .6s ease}
-.frame-card.flash-hit{animation:flashHit .6s ease}
-.frame-card.flash-new{animation:flashNew .8s ease}
-@keyframes flashFault{0%{box-shadow:0 0 0 0 rgba(248,81,73,.8)}50%{box-shadow:0 0 20px 8px rgba(248,81,73,.6)}100%{box-shadow:none}}
-@keyframes flashHit {0%{box-shadow:0 0 0 0 rgba(63,185,80,.8)}50%{box-shadow:0 0 20px 8px rgba(63,185,80,.6)}100%{box-shadow:none}}
-@keyframes flashNew {0%{opacity:0;transform:scale(.9)}60%{opacity:1;transform:scale(1.04)}100%{transform:scale(1)}}
-
-/* OPT ANALISIS */
-.opt-box{background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:10px;margin-top:8px}
-.opt-title{font-size:10px;font-weight:700;color:var(--orange);text-transform:uppercase;margin-bottom:6px}
-.opt-row{display:flex;align-items:center;gap:6px;padding:3px 6px;border-radius:4px;margin-bottom:2px;font-size:11px}
-.opt-row.victima{background:rgba(248,81,73,.15);border:1px solid rgba(248,81,73,.3)}
+/* OPT analisis */
+.opt-box{background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:8px;margin-top:7px}
+.opt-title{font-size:9px;font-weight:700;color:var(--orange);text-transform:uppercase;margin-bottom:5px}
+.opt-row{display:flex;align-items:center;gap:5px;padding:2px 5px;border-radius:3px;margin-bottom:2px;font-size:10px}
+.opt-row.vic{background:rgba(248,81,73,.12);border:1px solid rgba(248,81,73,.25)}
 .opt-prox{margin-left:auto;font-weight:700}
 .opt-prox.nunca{color:var(--red)}
 .opt-prox.lejano{color:var(--orange)}
 .opt-prox.cerca{color:var(--green)}
 
-/* DISCO WRITE */
-.disco-badge{display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border-radius:4px;background:rgba(248,81,73,.15);border:1px solid rgba(248,81,73,.3);color:var(--red);font-size:11px;animation:pulseDisco 1s ease}
-@keyframes pulseDisco{0%,100%{opacity:1}50%{opacity:.5}}
+/* RAM GRID */
+.ram-area{flex:1;overflow-y:auto;padding:12px 16px}
+.ram-title{font-size:10px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.08em;margin-bottom:10px}
+.ram-grid{display:grid;gap:8px;grid-template-columns:repeat(auto-fill,minmax(120px,1fr))}
 
-/* PANEL DERECHO */
-.tlb-section{margin-bottom:16px}
-.tlb-table{width:100%;border-collapse:collapse}
-.tlb-table th{font-size:10px;color:var(--text3);font-weight:600;text-align:left;padding:3px 6px;border-bottom:1px solid var(--border)}
-.tlb-table td{padding:4px 6px;font-size:11px;border-bottom:1px solid rgba(48,54,61,.5)}
-.tlb-row.valida{color:var(--text)}
-.tlb-row.invalida{color:var(--text3);text-decoration:line-through}
-.valida-dot{width:7px;height:7px;border-radius:50%;background:var(--green);display:inline-block}
-.invalida-dot{width:7px;height:7px;border-radius:50%;background:var(--red);display:inline-block}
+.frame-card{border-radius:var(--radius);border:3px solid;padding:10px;position:relative;transition:background .4s,border-color .4s;cursor:default;min-height:105px;display:flex;flex-direction:column;gap:3px}
+.frame-card.libre{background:var(--bg2);border-color:var(--border);border-style:dashed}
+.frame-card.libre .frame-num{color:var(--text3)}
+.frame-num{font-size:9px;color:rgba(255,255,255,.45);font-weight:700;letter-spacing:.05em}
+.frame-proc{font-size:12px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.frame-pag{font-size:10px;color:rgba(255,255,255,.65);margin-bottom:2px}
+.frame-bits{display:flex;gap:3px;flex-wrap:wrap}
+.fb{font-size:9px;padding:1px 4px;border-radius:8px;font-weight:700}
+.fb.P1{background:rgba(63,185,80,.25);color:var(--green)}
+.fb.D1{background:rgba(240,136,62,.25);color:var(--orange)}
+.fb.R1{background:rgba(210,153,34,.25);color:var(--yellow)}
+.fb.off{background:rgba(255,255,255,.07);color:rgba(255,255,255,.25)}
+.frame-addr{font-size:8px;color:rgba(255,255,255,.25);margin-top:auto;word-break:break-all}
+
+/* Animaciones de marcos */
+@keyframes frameIn  {0%{opacity:0;transform:scale(.85)}60%{transform:scale(1.05)}100%{opacity:1;transform:scale(1)}}
+@keyframes frameOut {0%{box-shadow:0 0 0 0 rgba(248,81,73,.9)}40%{box-shadow:0 0 22px 8px rgba(248,81,73,.6);background:rgba(248,81,73,.25)}100%{box-shadow:none}}
+@keyframes frameHit {0%,100%{}50%{box-shadow:0 0 18px 5px rgba(63,185,80,.7);border-color:var(--green)!important}}
+@keyframes frameWrite{0%,100%{}50%{box-shadow:0 0 14px 4px rgba(240,136,62,.6)}}
+.frame-card.anim-in   {animation:frameIn  .55s ease}
+.frame-card.anim-out  {animation:frameOut .45s ease}
+.frame-card.anim-hit  {animation:frameHit .55s ease}
+.frame-card.anim-write{animation:frameWrite .45s ease}
+
+/* TLB SLOTS */
+.tlb-slots{display:flex;flex-direction:column;gap:3px;margin-bottom:8px}
+.tlb-slot{display:flex;align-items:center;gap:6px;padding:5px 8px;border-radius:5px;border:1px solid var(--border);border-left:3px solid;font-size:11px;transition:all .3s;min-height:30px;position:relative}
+.tlb-slot.vacio{border-left-color:var(--bg4);background:var(--bg2);color:var(--text3);font-style:italic}
+.tlb-slot.invalida{border-left-color:var(--border);background:var(--bg2);opacity:.4}
+.tlb-slot.valida{background:var(--bg2)}
+@keyframes tlbHit {0%,100%{}50%{box-shadow:0 0 14px 3px rgba(63,185,80,.7);background:rgba(63,185,80,.12)}}
+@keyframes tlbNew {0%{opacity:0;transform:translateX(-12px)}100%{opacity:1;transform:none}}
+.tlb-slot.glow-hit{animation:tlbHit .7s ease}
+.tlb-slot.glow-new{animation:tlbNew .45s ease}
+.tlb-idx{font-size:9px;color:var(--text3);width:14px;flex-shrink:0;text-align:center}
+.tlb-vdot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
+.tlb-page{font-weight:700;width:36px}
+.tlb-sym{color:var(--text3);font-size:11px}
+.tlb-frame{color:var(--blue);font-weight:700;width:50px}
+.tlb-app{font-size:9px;color:var(--text3);margin-left:auto;max-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:right}
+.tlb-stats{font-size:10px;color:var(--text3);padding:4px 0;display:flex;gap:10px}
 
 /* HISTORIAL */
-.hist-item{padding:6px 8px;border-radius:6px;border-left:3px solid;margin-bottom:4px;background:var(--bg2);font-size:11px}
+.hist-item{padding:5px 7px;border-radius:6px;border-left:3px solid;margin-bottom:3px;background:var(--bg2);font-size:10px}
 .hist-item.fault{border-color:var(--red)}
-.hist-item.fault.reemplazo{border-color:var(--orange)}
+.hist-item.page_fault_reemplazo{border-color:var(--orange)}
 .hist-item.tlb_hit{border-color:var(--green)}
 .hist-item.acceso{border-color:var(--blue)}
-.hist-paso{color:var(--text3);font-size:10px}
-.hist-desc{color:var(--text2);margin-top:2px}
+.hist-paso{color:var(--text3);font-size:9px}
+.hist-desc{color:var(--text2);margin-top:1px}
 
 /* STATS BAR */
-.stats-bar{background:var(--bg2);border-top:1px solid var(--border);padding:10px 20px;display:flex;gap:20px;align-items:center;flex-wrap:wrap;flex-shrink:0}
-.stat{display:flex;flex-direction:column;align-items:center;gap:2px}
-.stat-val{font-size:18px;font-weight:700}
+.stats-bar{background:var(--bg2);border-top:1px solid var(--border);padding:8px 16px;display:flex;gap:16px;align-items:center;flex-wrap:wrap;flex-shrink:0}
+.stat{display:flex;flex-direction:column;align-items:center;gap:1px}
+.stat-val{font-size:16px;font-weight:700}
 .stat-val.fault{color:var(--red)}
 .stat-val.hit{color:var(--green)}
 .stat-val.disk{color:var(--orange)}
 .stat-val.blue{color:var(--blue)}
-.stat-label{font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em}
-.progress-bar{flex:1;min-width:120px}
-.progress-label{font-size:10px;color:var(--text3);margin-bottom:3px;display:flex;justify-content:space-between}
-.progress-track{height:6px;background:var(--bg4);border-radius:3px;overflow:hidden}
+.stat-label{font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em}
+.progress-bar{flex:1;min-width:100px}
+.progress-label{font-size:9px;color:var(--text3);margin-bottom:2px;display:flex;justify-content:space-between}
+.progress-track{height:5px;background:var(--bg4);border-radius:3px;overflow:hidden}
 .progress-fill{height:100%;border-radius:3px;transition:width .4s}
 .progress-fill.fault{background:var(--red)}
 .progress-fill.hit{background:var(--green)}
 
 /* SPLASH */
-.splash{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;gap:16px;padding:40px;text-align:center}
-.splash h2{color:var(--blue);font-size:22px}
-.splash p{color:var(--text2);max-width:480px;line-height:1.6}
+.splash{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;gap:14px;padding:40px;text-align:center}
+.splash h2{color:var(--blue);font-size:20px}
+.splash p{color:var(--text2);max-width:500px;line-height:1.6}
 .splash .config-row{display:flex;gap:10px;align-items:center}
 
 /* SCROLLBAR */
-::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar{width:5px;height:5px}
 ::-webkit-scrollbar-track{background:transparent}
 ::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
-
-/* AUTO mode indicator */
-.auto-indicator{width:8px;height:8px;border-radius:50%;background:var(--green);animation:pulse .8s infinite}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
 </style>
 </head>
 <body>
@@ -956,7 +1027,7 @@ select{background:var(--bg3);border:1px solid var(--border);color:var(--text);pa
 
 <!-- HEADER -->
 <div class="header">
-  <h1>MMU Simulator <span>Algoritmo Optimo de Belady</span></h1>
+  <h1>MMU Simulator <span>Belady Optimo</span></h1>
   <div class="controls">
     <button class="btn primary" id="btnIniciar" onclick="iniciar()">Iniciar simulacion</button>
     <button class="btn" id="btnPaso" onclick="paso()" disabled>Siguiente paso</button>
@@ -979,512 +1050,506 @@ select{background:var(--bg3);border:1px solid var(--border);color:var(--text);pa
       <option value="12">12 marcos</option>
     </select>
     <div id="autoInd" class="auto-indicator" style="display:none"></div>
-    <span id="pasoLabel" style="color:var(--text2);font-size:11px;margin-left:8px"></span>
+    <span id="pasoLabel" style="color:var(--text2);font-size:11px;margin-left:6px"></span>
   </div>
 </div>
 
 <!-- MAIN -->
 <div class="main" id="mainContent">
 
-  <!-- SPLASH INICIAL -->
+  <!-- SPLASH -->
   <div id="splash" style="grid-column:1/-1;display:flex">
     <div class="splash">
-      <h2>Simulador MMU con Memoria RAM Real</h2>
-      <p>
-        Esta simulacion usa procesos <strong>reales de tu sistema</strong> (Chrome, Safari, etc.)
-        como carga de trabajo. Cada marco de RAM es un bloque de <strong>4 KB asignado
-        realmente con ctypes</strong>. Podras observar en tiempo real:
-      </p>
+      <h2>Simulador MMU — Memoria Virtual y RAM</h2>
+      <p>Simula como juegos y apps pesadas compiten por los marcos de RAM.
+         Observa el PTBR apuntando a la tabla de paginas, las traducciones en la TLB,
+         y el algoritmo Optimo eligiendo la victima cuando la RAM esta llena.</p>
       <ul style="color:var(--text2);text-align:left;line-height:2;list-style:none">
-        <li>🔵 <strong>TLB HIT / MISS</strong> — cache de traducciones de direcciones</li>
-        <li>🔴 <strong>PAGE FAULT</strong> — pagina ausente en RAM, se carga desde disco</li>
-        <li>🟠 <strong>Bit Sucio (D=1)</strong> — pagina modificada que debe escribirse al disco</li>
-        <li>🟡 <strong>Bit Referencia (R=1)</strong> — accedida recientemente</li>
-        <li>⚙️ <strong>Algoritmo Optimo</strong> — elige la victima con analisis del futuro</li>
+        <li>⚡ <strong>TLB HIT</strong> — traduccion instantanea desde la cache</li>
+        <li>⚠️ <strong>PAGE FAULT</strong> — pagina ausente, se carga del disco</li>
+        <li>🔄 <strong>REEMPLAZO</strong> — RAM llena, algoritmo Optimo elige victima</li>
+        <li>🟠 <strong>D=1 (sucio)</strong> — se escribe al disco antes de desalojar</li>
       </ul>
       <div class="config-row">
         <label style="color:var(--text2)">Marcos en RAM:</label>
-        <select id="selMarcos2" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:6px;font-size:14px">
+        <select id="selMarcos2" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:7px 12px;border-radius:6px;font-size:13px">
           <option value="3">3 marcos (muy poca RAM)</option>
           <option value="4">4 marcos</option>
           <option value="5">5 marcos</option>
-          <option value="6" selected>6 marcos (recomendado)</option>
+          <option value="6" selected>6 marcos</option>
           <option value="8">8 marcos</option>
-          <option value="12">12 marcos (holgada)</option>
+          <option value="12">12 marcos</option>
         </select>
-        <button id="btnSplash" class="btn primary" style="padding:9px 20px;font-size:14px" onclick="iniciarDesde()">
+        <button id="btnSplash" class="btn primary" style="padding:8px 18px;font-size:13px" onclick="iniciarDesde()">
           Iniciar simulacion
         </button>
       </div>
     </div>
   </div>
 
-  <!-- PANEL IZQUIERDO: PROCESOS -->
+  <!-- LEFT PANEL: Procesos + RAM usage + PTBR + Tabla paginas -->
   <div class="panel" id="panelProcesos" style="display:none">
-    <div class="panel-title">Procesos del sistema</div>
+    <div class="panel-title">Procesos simulados</div>
     <div id="listaProcesos"></div>
-    <div style="margin-top:12px;padding:8px;background:var(--bg2);border-radius:6px;border:1px solid var(--border)">
-      <div style="font-size:10px;color:var(--text3);margin-bottom:6px;text-transform:uppercase">Uso RAM real</div>
-      <div id="ramUsage" style="font-size:12px;color:var(--text2)"></div>
+    <div class="ram-usage-box">
+      <div style="font-size:9px;color:var(--text3);margin-bottom:5px;text-transform:uppercase">Uso de RAM</div>
+      <div id="ramUsage" style="font-size:11px;color:var(--text2)"></div>
+    </div>
+
+    <!-- PTBR -->
+    <div class="ptbr-section" id="ptbrSection" style="display:none">
+      <div class="panel-title" style="margin-bottom:5px">
+        <span style="color:var(--yellow)">▶</span> CPU Register
+      </div>
+      <!-- CR3 / PTBR register -->
+      <div class="ptbr-reg-box" id="ptbrRegBox">
+        <span class="ptbr-reg-label">PTBR</span>
+        <div class="ptbr-reg-val" id="ptbrRegVal">
+          <span style="color:var(--text3)">—</span>
+        </div>
+      </div>
+      <div class="ptbr-connector">↓</div>
+      <!-- Page table del proceso activo -->
+      <div class="pt-box">
+        <div class="pt-header" id="ptHeader">
+          <span>Tabla de Paginas</span>
+        </div>
+        <div class="pt-entries" id="ptEntries">
+          <div style="color:var(--text3);padding:4px">Sin datos</div>
+        </div>
+      </div>
     </div>
   </div>
 
-  <!-- CENTRO: EVENTO + RAM -->
+  <!-- CENTRO: Evento + RAM -->
   <div class="center" id="panelCentro" style="display:none">
-    <!-- evento actual -->
     <div class="evento-box" id="eventoBox">
       <div class="evento-tipo inicio" id="eventoTipo">LISTO</div>
-      <div class="evento-heading" id="eventoHeading">Simulacion lista para iniciar</div>
-      <div class="evento-desc" id="eventoDesc">Presiona "Siguiente paso" para comenzar la simulacion paso a paso</div>
-      <div class="evento-flujo" id="eventoFlujo"></div>
+      <div class="evento-heading" id="eventoHeading">Simulacion lista</div>
+      <div class="evento-desc" id="eventoDesc">Presiona "Siguiente paso" para comenzar</div>
+      <div class="flujo-row" id="eventoFlujo"></div>
       <div class="bits-row" id="eventoBits"></div>
       <div id="opcionVictima"></div>
     </div>
-    <!-- RAM -->
     <div class="ram-area">
       <div class="ram-title" id="ramTitle">MEMORIA FISICA (RAM)</div>
       <div class="ram-grid" id="ramGrid"></div>
     </div>
   </div>
 
-  <!-- PANEL DERECHO: TLB + HISTORIAL -->
+  <!-- RIGHT PANEL: TLB visual + Historial -->
   <div class="panel" id="panelDerecho" style="display:none">
-    <!-- TLB -->
-    <div class="tlb-section">
-      <div class="panel-title">TLB <span id="tlbCap" style="font-weight:400;color:var(--text3)"></span></div>
-      <table class="tlb-table">
-        <thead><tr><th></th><th>Pagina</th><th>Marco</th><th>Proceso</th></tr></thead>
-        <tbody id="tlbBody"></tbody>
-      </table>
-      <div style="margin-top:8px;font-size:10px;color:var(--text3)">
-        TLB Hits: <span id="tlbHitPct" style="color:var(--green)">0%</span>
-        &nbsp;|&nbsp; Misses: <span id="tlbMissN" style="color:var(--red)">0</span>
-      </div>
+    <div class="panel-title">
+      TLB <span id="tlbCap" style="font-weight:400;color:var(--text3)"></span>
+    </div>
+    <div class="tlb-slots" id="tlbSlots"></div>
+    <div class="tlb-stats" id="tlbStats">
+      <span>Hits: <strong id="tlbHitPct" style="color:var(--green)">0%</strong></span>
+      <span>Misses: <strong id="tlbMissN" style="color:var(--red)">0</strong></span>
     </div>
 
-    <!-- Tabla de paginas resumen -->
-    <div class="tlb-section" style="margin-top:4px">
-      <div class="panel-title">Tabla de paginas</div>
-      <div id="tablaPaginas" style="font-size:11px"></div>
-    </div>
-
-    <!-- Historial -->
-    <div>
-      <div class="panel-title" style="margin-top:4px">Historial reciente</div>
-      <div id="historial"></div>
-    </div>
+    <div class="panel-title" style="margin-top:10px">Historial reciente</div>
+    <div id="historial"></div>
   </div>
 
 </div><!-- /main -->
 
 <!-- STATS BAR -->
 <div class="stats-bar" id="statsBar" style="display:none">
-  <div class="stat">
-    <div class="stat-val fault" id="statFaults">0</div>
-    <div class="stat-label">Page Faults</div>
-  </div>
-  <div class="stat">
-    <div class="stat-val hit" id="statHitPct">0%</div>
-    <div class="stat-label">TLB Hit Rate</div>
-  </div>
-  <div class="stat">
-    <div class="stat-val disk" id="statDiskR">0</div>
-    <div class="stat-label">Lecturas Disco</div>
-  </div>
-  <div class="stat">
-    <div class="stat-val disk" id="statDiskW">0</div>
-    <div class="stat-label">Escrituras Disco</div>
-  </div>
-  <div class="stat">
-    <div class="stat-val blue" id="statAccesos">0</div>
-    <div class="stat-label">Accesos</div>
+  <div class="stat"><div class="stat-val fault" id="statFaults">0</div><div class="stat-label">Page Faults</div></div>
+  <div class="stat"><div class="stat-val hit" id="statHitPct">0%</div><div class="stat-label">TLB Hit Rate</div></div>
+  <div class="stat"><div class="stat-val disk" id="statDiskR">0</div><div class="stat-label">Lecturas Disco</div></div>
+  <div class="stat"><div class="stat-val disk" id="statDiskW">0</div><div class="stat-label">Escrituras Disco</div></div>
+  <div class="stat"><div class="stat-val blue" id="statAccesos">0</div><div class="stat-label">Accesos</div></div>
+  <div class="progress-bar">
+    <div class="progress-label"><span>Faults</span><span id="faultPct2">0%</span></div>
+    <div class="progress-track"><div class="progress-fill fault" id="faultBar" style="width:0%"></div></div>
   </div>
   <div class="progress-bar">
-    <div class="progress-label">
-      <span>Faults</span><span id="faultPct2">0%</span>
-    </div>
-    <div class="progress-track">
-      <div class="progress-fill fault" id="faultBar" style="width:0%"></div>
-    </div>
+    <div class="progress-label"><span>TLB Hit Rate</span><span id="hitPct2">0%</span></div>
+    <div class="progress-track"><div class="progress-fill hit" id="hitBar" style="width:0%"></div></div>
   </div>
-  <div class="progress-bar">
-    <div class="progress-label">
-      <span>TLB Hit Rate</span><span id="hitPct2">0%</span>
-    </div>
-    <div class="progress-track">
-      <div class="progress-fill hit" id="hitBar" style="width:0%"></div>
-    </div>
-  </div>
-  <div style="color:var(--text3);font-size:11px;margin-left:auto" id="pasoFinal"></div>
+  <div style="color:var(--text3);font-size:10px;margin-left:auto" id="pasoFinal"></div>
 </div>
 
 </div><!-- /app -->
 
 <script>
-let autoMode = false;
-let autoTimer = null;
-let estado = null;
-let iniciado = false;
+let autoMode=false,autoTimer=null,estado=null,iniciado=false;
 
 function getMarcos(){
-  return document.getElementById('selMarcos').value ||
-         document.getElementById('selMarcos2').value || '6';
+  return document.getElementById('selMarcos').value||
+         document.getElementById('selMarcos2').value||'6';
 }
 
 async function iniciarDesde(){
-  const m = document.getElementById('selMarcos2').value;
-  document.getElementById('selMarcos').value = m;
+  const m=document.getElementById('selMarcos2').value;
+  document.getElementById('selMarcos').value=m;
   await iniciar();
 }
 
 async function iniciar(){
-  // feedback visual inmediato en ambos botones
-  const btns = [document.getElementById('btnSplash'), document.getElementById('btnIniciar')];
-  btns.forEach(b=>{ if(b){ b.textContent='Leyendo procesos del sistema...'; b.disabled=true; }});
-
-  try {
-    const marcos = getMarcos();
-    const res = await fetch('/api/inicializar',{
+  const btns=[document.getElementById('btnSplash'),document.getElementById('btnIniciar')];
+  btns.forEach(b=>{if(b){b.textContent='Leyendo procesos...';b.disabled=true;}});
+  try{
+    const marcos=getMarcos();
+    const res=await fetch('/api/inicializar',{
       method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({marcos:parseInt(marcos)})
     });
-    console.log('[3] Fetch completado, status:', res.status);
-    if(!res.ok) throw new Error('HTTP '+res.status);
-    const data = await res.json();
-    console.log('[4] JSON parseado, procesos:', data.procesos?.length);
-    iniciado = true;
-    console.log('[5] Mostrando UI...');
+    if(!res.ok)throw new Error('HTTP '+res.status);
+    const data=await res.json();
+    iniciado=true;
     mostrarUI();
-    console.log('[6] Renderizando procesos...');
     renderProcesos(data.procesos);
-    document.getElementById('pasoLabel').textContent =
-      `0 / ${data.total_pasos} pasos`;
-    document.getElementById('btnPaso').disabled = false;
-    document.getElementById('btnAuto').disabled = false;
-    document.getElementById('btnReset').style.display = '';
-    document.getElementById('btnIniciar').style.display = 'none';
-    console.log('[7] Obteniendo estado...');
-    const est = await fetch('/api/estado').then(r=>r.json());
-    console.log('[8] Estado obtenido, paso:', est.paso);
+    document.getElementById('pasoLabel').textContent=`0 / ${data.total_pasos} pasos`;
+    document.getElementById('btnPaso').disabled=false;
+    document.getElementById('btnAuto').disabled=false;
+    document.getElementById('btnReset').style.display='';
+    document.getElementById('btnIniciar').style.display='none';
+    const est=await fetch('/api/estado').then(r=>r.json());
     actualizarVista(est);
-    console.log('[9] Vista actualizada - LISTO');
-  } catch(err) {
-    btns.forEach(b=>{ if(b){ b.textContent='Iniciar simulacion'; b.disabled=false; }});
-    console.error('Error en iniciar():', err);
-    alert('Error al inicializar: ' + err.message + '. Revisa la consola (F12).');
+  }catch(err){
+    btns.forEach(b=>{if(b){b.textContent='Iniciar simulacion';b.disabled=false;}});
+    alert('Error: '+err.message);
   }
 }
 
 function mostrarUI(){
-  document.getElementById('splash').style.display = 'none';
-  document.getElementById('panelProcesos').style.display = '';
-  document.getElementById('panelCentro').style.display = '';
-  document.getElementById('panelDerecho').style.display = '';
-  document.getElementById('statsBar').style.display = '';
+  document.getElementById('splash').style.display='none';
+  ['panelProcesos','panelCentro','panelDerecho','statsBar'].forEach(id=>{
+    document.getElementById(id).style.display='';
+  });
 }
 
 async function paso(){
-  console.log('[PASO] Iniciado:', iniciado);
-  if(!iniciado) {
-    console.log('[PASO] Bloqueado - no iniciado');
-    return;
-  }
-  console.log('[PASO] Llamando /api/avanzar...');
-  const res = await fetch('/api/avanzar',{method:'POST'});
-  console.log('[PASO] Status:', res.status);
-  const est = await res.json();
-  console.log('[PASO] Paso actual:', est.paso);
+  if(!iniciado)return;
+  const res=await fetch('/api/avanzar',{method:'POST'});
+  const est=await res.json();
   actualizarVista(est);
   if(est.terminado){
-    document.getElementById('btnPaso').disabled = true;
+    document.getElementById('btnPaso').disabled=true;
     stopAuto();
-    document.getElementById('btnAuto').disabled = true;
-    document.getElementById('pasoFinal').textContent = 'Simulacion completada';
+    document.getElementById('btnAuto').disabled=true;
+    document.getElementById('pasoFinal').textContent='Simulacion completada';
   }
-  console.log('[PASO] Completado');
 }
 
-function toggleAuto(){
-  if(autoMode){ stopAuto(); } else { startAuto(); }
-}
+function toggleAuto(){if(autoMode)stopAuto();else startAuto();}
 function startAuto(){
-  autoMode = true;
-  document.getElementById('btnAuto').textContent = 'PAUSAR';
-  document.getElementById('btnAuto').className = 'btn danger';
-  document.getElementById('autoInd').style.display = '';
+  autoMode=true;
+  document.getElementById('btnAuto').textContent='PAUSAR';
+  document.getElementById('btnAuto').className='btn danger';
+  document.getElementById('autoInd').style.display='';
   runAuto();
 }
 function stopAuto(){
-  autoMode = false;
-  clearTimeout(autoTimer);
-  document.getElementById('btnAuto').textContent = 'AUTO';
-  document.getElementById('btnAuto').className = 'btn';
-  document.getElementById('autoInd').style.display = 'none';
+  autoMode=false;clearTimeout(autoTimer);
+  document.getElementById('btnAuto').textContent='AUTO';
+  document.getElementById('btnAuto').className='btn';
+  document.getElementById('autoInd').style.display='none';
 }
 function runAuto(){
-  if(!autoMode) return;
+  if(!autoMode)return;
   paso().then(()=>{
-    if(autoMode && estado && !estado.terminado){
-      const spd = parseInt(document.getElementById('selSpeed').value);
-      autoTimer = setTimeout(runAuto, spd);
-    } else {
-      stopAuto();
-    }
+    if(autoMode&&estado&&!estado.terminado){
+      const spd=parseInt(document.getElementById('selSpeed').value);
+      autoTimer=setTimeout(runAuto,spd);
+    }else stopAuto();
   });
 }
 
 async function reset(){
   stopAuto();
-  const marcos = getMarcos();
-  await fetch('/api/reset',{
-    method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({marcos:parseInt(marcos)})
-  });
-  const est = await fetch('/api/estado').then(r=>r.json());
+  const marcos=getMarcos();
+  await fetch('/api/reset',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({marcos:parseInt(marcos)})});
+  const est=await fetch('/api/estado').then(r=>r.json());
   actualizarVista(est);
-  document.getElementById('btnPaso').disabled = false;
-  document.getElementById('btnAuto').disabled = false;
-  document.getElementById('pasoFinal').textContent = '';
-  document.getElementById('pasoLabel').textContent = `0 / ${est.total_pasos} pasos`;
+  document.getElementById('btnPaso').disabled=false;
+  document.getElementById('btnAuto').disabled=false;
+  document.getElementById('pasoFinal').textContent='';
+  document.getElementById('pasoLabel').textContent=`0 / ${est.total_pasos} pasos`;
 }
 
 // ── RENDER PRINCIPAL ─────────────────────────────────────────────────────────
 function actualizarVista(est){
-  estado = est;
-  renderEvento(est.evento, est.meta_actual);
-  renderRAM(est.marcos, est.evento);
-  renderTLB(est.tlb, est.tlb_cap);
-  renderTablaPaginas(est.marcos, est.tlb);
+  estado=est;
+  renderEvento(est.evento,est.meta_actual);
+  renderRAM(est.marcos,est.evento);
+  renderTLB(est.tlb,est.tlb_cap,est.evento);
+  renderPTBR(est.ptbr,est.tabla_procesos,est.evento);
   renderHistorial(est.historial);
   renderStats(est.stats);
-  document.getElementById('pasoLabel').textContent =
-    `${est.paso+1} / ${est.total_pasos} pasos`;
-  document.getElementById('ramTitle').textContent =
-    `MEMORIA FISICA (RAM) — ${est.num_marcos} marcos x 4 KB reales`;
-  actualizarRamUsage();
+  document.getElementById('pasoLabel').textContent=`${est.paso+1} / ${est.total_pasos} pasos`;
+  document.getElementById('ramTitle').textContent=`MEMORIA FISICA — ${est.num_marcos} marcos x 4 KB`;
+  actualizarRamUsage(est.marcos,est.num_marcos);
 }
 
 function renderProcesos(procs){
-  const el = document.getElementById('listaProcesos');
-  el.innerHTML = procs.map(p=>`
+  document.getElementById('listaProcesos').innerHTML=procs.map(p=>`
     <div class="proc-item">
-      <div class="proc-dot" style="background:${p.color}"></div>
-      <div class="proc-info">
+      <div class="proc-swatch" style="background:${p.color}"></div>
+      <div style="min-width:0;flex:1">
         <div class="proc-name">${p.icono} ${p.nombre}</div>
-        <div class="proc-mem">${p.mem_mb.toFixed(0)} MB en RAM</div>
-        <div class="proc-pages">${p.num_paginas} paginas virtuales</div>
+        <div class="proc-sub">${p.mem_mb.toFixed(0)} MB &middot; ${p.num_paginas} pags virtuales</div>
       </div>
+    </div>`).join('');
+}
+
+function actualizarRamUsage(marcos,total){
+  const ocup=marcos?marcos.filter(m=>!m.libre).length:0;
+  const libre=total-ocup;
+  const pct=total?Math.round(ocup/total*100):0;
+  const col=pct>85?'var(--red)':pct>60?'var(--orange)':'var(--green)';
+  document.getElementById('ramUsage').innerHTML=`
+    <div style="margin-bottom:4px;display:flex;justify-content:space-between">
+      <span style="color:${col}">${ocup} ocupados</span>
+      <span style="color:var(--green)">${libre} libres</span>
+      <span style="color:var(--text3)">${pct}%</span>
     </div>
-  `).join('');
+    <div style="height:5px;background:var(--bg4);border-radius:3px;overflow:hidden">
+      <div style="height:100%;width:${pct}%;background:${col};transition:width .4s;border-radius:3px"></div>
+    </div>`;
 }
 
-function actualizarRamUsage(){
-  try{
-    fetch('/api/estado').then(r=>r.json()).then(est=>{
-      const ocup = est.marcos.filter(m=>!m.libre).length;
-      const libre = est.num_marcos - ocup;
-      const pct = Math.round(ocup/est.num_marcos*100);
-      document.getElementById('ramUsage').innerHTML =
-        `<div style="margin-bottom:4px">
-          <span style="color:var(--red)">${ocup} marcos ocupados</span>
-          &nbsp;/&nbsp;
-          <span style="color:var(--green)">${libre} libres</span>
-          &nbsp;(${pct}%)
-        </div>
-        <div style="height:6px;background:var(--bg4);border-radius:3px;overflow:hidden">
-          <div style="height:100%;width:${pct}%;background:${pct>85?'var(--red)':pct>60?'var(--orange)':'var(--green)'};transition:width .4s;border-radius:3px"></div>
-        </div>`;
-    });
-  }catch(e){}
-}
+// ── PTBR + Tabla de Paginas ───────────────────────────────────────────────────
+function renderPTBR(ptbr,tablaProcs,evento){
+  const sec=document.getElementById('ptbrSection');
+  if(!ptbr){sec.style.display='none';return;}
+  sec.style.display='';
 
-function renderEvento(ev, meta){
-  if(!ev || !ev.tipo){
-    document.getElementById('eventoTipo').className = 'evento-tipo inicio';
-    document.getElementById('eventoTipo').textContent = 'LISTO';
-    document.getElementById('eventoHeading').textContent = 'Simulacion lista para iniciar';
-    document.getElementById('eventoDesc').textContent = 'Presiona "Siguiente paso" para comenzar la simulacion paso a paso';
-    document.getElementById('eventoFlujo').innerHTML = '';
-    document.getElementById('eventoBits').innerHTML = '';
-    document.getElementById('opcionVictima').innerHTML = '';
+  // Registro PTBR
+  const box=document.getElementById('ptbrRegBox');
+  box.className='ptbr-reg-box active';
+  document.getElementById('ptbrRegVal').innerHTML=
+    `<span style="font-size:14px">${ptbr.icono}</span>
+     <span style="color:${ptbr.color}">${ptbr.nombre}</span>
+     <span style="color:var(--text3);font-size:10px">pid=${ptbr.pid}</span>`;
+  box.style.borderColor=ptbr.color;
+  box.style.boxShadow=`0 0 10px ${hexToRgba(ptbr.color,.3)}`;
+
+  // Tabla de paginas del proceso actual
+  const procData=tablaProcs?tablaProcs.find(p=>p.pid===ptbr.pid):null;
+  document.getElementById('ptHeader').innerHTML=
+    `<span style="color:${ptbr.color}">${ptbr.icono} ${ptbr.nombre}</span>
+     <span style="color:var(--text3);margin-left:auto">Tabla de Paginas</span>`;
+
+  if(!procData||!procData.entradas||procData.entradas.length===0){
+    document.getElementById('ptEntries').innerHTML=
+      '<div style="color:var(--text3);padding:4px;font-size:10px">Ninguna pagina accedida aun</div>';
     return;
   }
-  const tipos = {
-    page_fault: {label:'PAGE FAULT', cls:'fault', emoji:'⚠️'},
-    page_fault_reemplazo: {label:'PAGE FAULT + REEMPLAZO', cls:'reemplazo', emoji:'🔄'},
-    tlb_hit: {label:'TLB HIT', cls:'tlb_hit', emoji:'⚡'},
-    acceso: {label:'ACCESO', cls:'acceso', emoji:'→'},
-  };
-  const t = tipos[ev.tipo] || {label:ev.tipo, cls:'acceso', emoji:'→'};
-  const escritura = ev.escritura;
-  const tipoAcceso = escritura
-    ? '<span style="color:var(--orange);font-weight:700">ESCRITURA</span>'
-    : '<span style="color:var(--green)">LECTURA</span>';
 
-  document.getElementById('eventoTipo').className = `evento-tipo ${t.cls}`;
-  document.getElementById('eventoTipo').textContent = t.label;
+  const pagActual=ptbr.pag_actual;
+  document.getElementById('ptEntries').innerHTML=procData.entradas.map(e=>{
+    const isActiva=String(e.pag)===String(pagActual);
+    const cls=isActiva?'activa':e.presente?'en-ram':'en-disco';
+    const dest=e.presente
+      ?`<span class="pt-dest">Marco ${e.marco}</span>`
+      :`<span class="pt-dest disk">DISCO</span>`;
+    const bits=`
+      <span class="pt-bit ${e.presente?'P1':'off'}">${e.presente?'P':'p'}</span>
+      ${e.sucio?`<span class="pt-bit D1">D</span>`:''}
+      ${e.referencia?`<span class="pt-bit R1">R</span>`:''}`;
+    return `<div class="pt-row ${cls}">
+      <span class="pt-pag">Pag ${e.pag}</span>
+      <span class="pt-arrow">→</span>
+      ${dest}
+      <span class="pt-bits">${bits}</span>
+    </div>`;
+  }).join('');
 
-  document.getElementById('eventoHeading').innerHTML =
-    `<span style="color:${ev.proc_color};font-size:20px">${ev.proc_icono}</span>
-     <span style="color:${ev.proc_color}">${ev.proc_nombre}</span>
-     <span style="color:var(--text3)">Pagina</span>
-     <span style="color:var(--text)">${ev.pag_idx}</span>
-     <span style="color:var(--text3)">—</span> ${tipoAcceso}`;
-
-  document.getElementById('eventoDesc').textContent = ev.desc || '';
-
-  // flujo VA -> pag -> marco -> PA
-  const flujoItems = [
-    {label: `VA`, val: ev.pa ? `Pag ${ev.pag_idx}` : '?'},
-    {label: `→`},
-    {label: `Marco`, val: `${ev.marco}`},
-    {label: `→`},
-    {label: `PA real`, val: ev.pa || '?'},
-  ];
-  document.getElementById('eventoFlujo').innerHTML = flujoItems.map(f=>
-    f.val === undefined
-      ? `<span class="flujo-arrow">${f.label}</span>`
-      : `<span class="flujo-item"><span style="color:var(--text3)">${f.label}: </span>${f.val}</span>`
-  ).join('');
-
-  // bits
-  const P = ev.P, D = ev.D, R = ev.R;
-  document.getElementById('eventoBits').innerHTML = `
-    <span class="bit ${P?'bit-P1':'bit-P0'}">P=${P?1:0} ${P?'en RAM':'en disco'}</span>
-    <span class="bit ${D?'bit-D1':'bit-D0'}">D=${D?1:0} ${D?'SUCIO':'limpio'}</span>
-    <span class="bit ${R?'bit-R1':'bit-R0'}">R=${R?1:0} ${R?'referenciado':''}</span>
-    ${escritura ? '<span class="disco-badge">escritura real a RAM</span>' : ''}
-    ${ev.tipo==='page_fault'||ev.tipo==='page_fault_reemplazo' ? '<span class="disco-badge" style="background:rgba(248,81,73,.25)">lectura de disco</span>' : ''}
-  `;
-
-  // victima + OPT analisis
-  let vicHTML = '';
-  if(ev.victima){
-    const v = ev.victima;
-    vicHTML = `<div class="opt-box">
-      <div class="opt-title">Victima seleccionada por Algoritmo Optimo</div>
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
-        <div style="width:12px;height:12px;border-radius:3px;background:${v.color}"></div>
-        <strong>${v.nombre}</strong> pagina ${v.llave.split(':')[1]}
-        marco ${v.marco}
-        ${v.sucio ? '<span class="disco-badge">SUCIA → escrita al disco</span>' : '<span style="color:var(--green);font-size:11px">limpia → descartada sin I/O</span>'}
-      </div>`;
-    if(ev.opt_analisis){
-      vicHTML += '<div class="opt-title" style="margin-bottom:4px">Analisis de uso futuro</div>';
-      const sorted = Object.entries(ev.opt_analisis)
-        .sort((a,b)=> {
-          const pa = a[1].prox==='NUNCA'?Infinity:parseInt(a[1].prox.replace('indice ',''));
-          const pb = b[1].prox==='NUNCA'?Infinity:parseInt(b[1].prox.replace('indice ',''));
-          return pb - pa;
-        });
-      for(const [k,v2] of sorted){
-        const isVic = v2.es_victima;
-        const prox  = v2.prox;
-        const cls   = prox==='NUNCA'?'nunca':prox.includes('indice') && parseInt(prox.split(' ')[1])>15?'lejano':'cerca';
-        vicHTML += `<div class="opt-row ${isVic?'victima':''}">
-          <div style="width:10px;height:10px;border-radius:2px;background:${v2.color};flex-shrink:0"></div>
-          <span>${v2.nombre} pag ${v2.pag}</span>
-          ${isVic?'<strong style="color:var(--red)">← VICTIMA</strong>':''}
-          <span class="opt-prox ${cls}">${prox}</span>
-        </div>`;
-      }
-    }
-    vicHTML += '</div>';
-  }
-  document.getElementById('opcionVictima').innerHTML = vicHTML;
+  // Scroll al entry activo
+  requestAnimationFrame(()=>{
+    const active=document.querySelector('.pt-row.activa');
+    if(active)active.scrollIntoView({block:'nearest',behavior:'smooth'});
+  });
 }
 
-function renderRAM(marcos, evento){
-  const grid = document.getElementById('ramGrid');
-  const evMarco = evento ? evento.marco : -1;
-  const evTipo  = evento ? evento.tipo  : '';
+// ── RAM GRID ─────────────────────────────────────────────────────────────────
+let prevMarcos={};
+function renderRAM(marcos,evento){
+  const grid=document.getElementById('ramGrid');
+  const evMarco=evento?evento.marco:-1;
+  const evTipo=evento?evento.tipo:'';
+  const esVictima=evento&&evento.victima?evento.victima.marco:-1;
 
-  grid.innerHTML = marcos.map(m => {
+  grid.innerHTML=marcos.map(m=>{
     if(m.libre){
       return `<div class="frame-card libre" id="fc${m.num}">
-        <div class="frame-num">Marco ${m.num}</div>
-        <div style="color:var(--text3);font-size:12px;margin-top:8px">LIBRE</div>
-        <div class="frame-addr">${m.addr}</div>
+        <div class="frame-num">MARCO ${m.num}</div>
+        <div style="color:var(--border);font-size:20px;margin:auto 0;text-align:center">▭</div>
+        <div class="frame-addr" style="margin-top:auto">${m.addr}</div>
       </div>`;
     }
-    const isEvento = m.num === evMarco;
-    let flashClass = '';
+    const isEvento=m.num===evMarco;
+    const wasVictim=m.num===esVictima;
+    let animCls='';
     if(isEvento){
-      if(evTipo==='tlb_hit') flashClass = 'flash-hit';
-      else if(evTipo==='page_fault'||evTipo==='page_fault_reemplazo') flashClass = 'flash-new';
+      if(evTipo==='tlb_hit') animCls='anim-hit';
+      else if(evTipo==='page_fault'||evTipo==='page_fault_reemplazo') animCls='anim-in';
+      else if(evento&&evento.escritura) animCls='anim-write';
     }
-    const bg = hexToRgba(m.color, 0.18);
-    const border = hexToRgba(m.color, 0.5);
-    return `<div class="frame-card ocupado ${flashClass}" id="fc${m.num}"
-              style="background:${bg};border-color:${border}">
-      <div class="frame-num">Marco ${m.num}</div>
+    const bg=hexToRgba(m.color,.14);
+    const borderCol=isEvento?m.color:hexToRgba(m.color,.55);
+    const glow=isEvento?`box-shadow:0 0 16px ${hexToRgba(m.color,.4)};`:'';
+    return `<div class="frame-card ${animCls}" id="fc${m.num}"
+              style="background:${bg};border-color:${borderCol};${glow}">
+      <div class="frame-num" style="color:${hexToRgba(m.color,.7)}">MARCO ${m.num}</div>
       <div class="frame-proc" style="color:${m.color}">${m.icono} ${m.nombre}</div>
-      <div class="frame-pag">Pagina ${m.pag_num}</div>
+      <div class="frame-pag">Pagina virtual ${m.pag_num}</div>
       <div class="frame-bits">
-        <span class="fb ${m.P?'fb-P1':'fb-off'}">${m.P?'P=1':'P=0'}</span>
-        <span class="fb ${m.D?'fb-D1':'fb-off'}">${m.D?'D=1':'D=0'}</span>
-        <span class="fb ${m.R?'fb-R1':'fb-off'}">${m.R?'R=1':'R=0'}</span>
+        <span class="fb ${m.P?'P1':'off'}">${m.P?'P=1':'P=0'}</span>
+        <span class="fb ${m.D?'D1':'off'}">${m.D?'D=1':'D=0'}</span>
+        <span class="fb ${m.R?'R1':'off'}">${m.R?'R=1':'R=0'}</span>
       </div>
       <div class="frame-addr">${m.addr}</div>
     </div>`;
   }).join('');
 }
 
-function renderTLB(tlb, cap){
-  document.getElementById('tlbCap').textContent = `(${cap} entradas)`;
-  const tbody = document.getElementById('tlbBody');
-  if(!tlb || tlb.length===0){
-    tbody.innerHTML = '<tr><td colspan="4" style="color:var(--text3);padding:6px">Vacio</td></tr>';
-    return;
+// ── TLB SLOTS ────────────────────────────────────────────────────────────────
+let prevTLBKeys=[];
+function renderTLB(tlb,cap,evento){
+  document.getElementById('tlbCap').textContent=`(${cap} entradas)`;
+  const evLlave=evento?evento.llave:'';
+  const evTipo=evento?evento.tipo:'';
+
+  // Construir N slots (cap total), los vacios al final
+  const slots=[];
+  for(let i=0;i<cap;i++){
+    const e=tlb&&tlb[i]?tlb[i]:null;
+    slots.push({idx:i,entry:e});
   }
-  tbody.innerHTML = tlb.map(e=>{
-    const parts = e.llave.split(':');
-    const pid = parts[0];
-    const pag = parts[1]||'?';
-    const proc = estado ? estado.procesos.find(p=>`P${p.pid}`===pid) : null;
-    const color = proc ? proc.color : '#6E7681';
-    const nombre = proc ? proc.nombre : pid;
-    return `<tr class="tlb-row ${e.valida?'valida':'invalida'}">
-      <td><span class="${e.valida?'valida':'invalida'}-dot"></span></td>
-      <td>${pag}</td>
-      <td>${e.marco}</td>
-      <td><span style="color:${color}">${nombre.substring(0,8)}</span></td>
-    </tr>`;
+
+  const html=slots.map(({idx,entry})=>{
+    if(!entry){
+      return `<div class="tlb-slot vacio">
+        <span class="tlb-idx">${idx}</span>
+        <span style="color:var(--bg4)">●</span>
+        <span style="font-size:10px">— vacio —</span>
+      </div>`;
+    }
+    const parts=entry.llave.split(':');
+    const pid=parts[0],pag=parts[1]||'?';
+    const proc=estado?estado.procesos.find(p=>`P${p.pid}`===pid):null;
+    const color=proc?proc.color:'#6E7681';
+    const nombre=proc?proc.nombre:pid;
+    const icono=proc?proc.icono:'⚙️';
+    const isHit=entry.llave===evLlave&&evTipo==='tlb_hit';
+    const isNew=entry.llave===evLlave&&(evTipo==='page_fault'||evTipo==='page_fault_reemplazo');
+    const animCls=isHit?'glow-hit':isNew?'glow-new':'';
+    const cls=entry.valida?'valida':'invalida';
+    const dotColor=entry.valida?'var(--green)':'var(--red)';
+    return `<div class="tlb-slot ${cls} ${animCls}" style="border-left-color:${color}">
+      <span class="tlb-idx">${idx}</span>
+      <span class="tlb-vdot" style="background:${dotColor}"></span>
+      <span class="tlb-page">Pag ${pag}</span>
+      <span class="tlb-sym">→</span>
+      <span class="tlb-frame">M${entry.marco}</span>
+      <span class="tlb-app">${icono} ${nombre.substring(0,10)}</span>
+    </div>`;
   }).join('');
+
+  document.getElementById('tlbSlots').innerHTML=html;
 }
 
-function renderTablaPaginas(marcos, tlb){
-  const el = document.getElementById('tablaPaginas');
-  if(!marcos) return;
-  const ocupados = marcos.filter(m=>!m.libre);
-  if(ocupados.length===0){
-    el.innerHTML = '<div style="color:var(--text3)">Sin paginas cargadas</div>';
+// ── EVENTO ───────────────────────────────────────────────────────────────────
+function renderEvento(ev,meta){
+  if(!ev||!ev.tipo){
+    document.getElementById('eventoTipo').className='evento-tipo inicio';
+    document.getElementById('eventoTipo').textContent='LISTO';
+    document.getElementById('eventoHeading').textContent='Simulacion lista para iniciar';
+    document.getElementById('eventoDesc').textContent='Presiona "Siguiente paso" para comenzar';
+    document.getElementById('eventoFlujo').innerHTML='';
+    document.getElementById('eventoBits').innerHTML='';
+    document.getElementById('opcionVictima').innerHTML='';
     return;
   }
-  el.innerHTML = `<table style="width:100%;border-collapse:collapse">
-    <thead><tr>
-      <th style="text-align:left;color:var(--text3);font-size:10px;padding:2px 4px">Pagina</th>
-      <th style="text-align:left;color:var(--text3);font-size:10px;padding:2px 4px">Marco</th>
-      <th style="text-align:center;color:var(--text3);font-size:10px;padding:2px 4px">P</th>
-      <th style="text-align:center;color:var(--text3);font-size:10px;padding:2px 4px">D</th>
-      <th style="text-align:center;color:var(--text3);font-size:10px;padding:2px 4px">R</th>
-    </tr></thead>
-    <tbody>${ocupados.map(m=>`
-      <tr>
-        <td style="padding:2px 4px"><span style="color:${m.color}">${m.nombre.substring(0,7)}</span> P${m.pag_num}</td>
-        <td style="padding:2px 4px;color:var(--text2)">${m.num}</td>
-        <td style="text-align:center;padding:2px 4px;color:${m.P?'var(--green)':'var(--red)'}">${m.P?1:0}</td>
-        <td style="text-align:center;padding:2px 4px;color:${m.D?'var(--orange)':'var(--text3)'}">${m.D?1:0}</td>
-        <td style="text-align:center;padding:2px 4px;color:${m.R?'var(--yellow)':'var(--text3)'}">${m.R?1:0}</td>
-      </tr>`).join('')}
-    </tbody>
-  </table>`;
+  const tipos={
+    page_fault:{label:'PAGE FAULT',cls:'fault',emoji:'⚠️'},
+    page_fault_reemplazo:{label:'PAGE FAULT + REEMPLAZO',cls:'reemplazo',emoji:'🔄'},
+    tlb_hit:{label:'TLB HIT',cls:'tlb_hit',emoji:'⚡'},
+    acceso:{label:'ACCESO',cls:'acceso',emoji:'→'},
+  };
+  const t=tipos[ev.tipo]||{label:ev.tipo,cls:'acceso',emoji:'→'};
+  const rw=ev.escritura
+    ?'<span style="color:var(--orange);font-weight:700">ESCRITURA</span>'
+    :'<span style="color:var(--green)">LECTURA</span>';
+
+  document.getElementById('eventoTipo').className=`evento-tipo ${t.cls}`;
+  document.getElementById('eventoTipo').textContent=`${t.emoji} ${t.label}`;
+  document.getElementById('eventoHeading').innerHTML=
+    `<span style="color:${ev.proc_color};font-size:18px">${ev.proc_icono}</span>
+     <span style="color:${ev.proc_color}">${ev.proc_nombre}</span>
+     <span style="color:var(--text3)">Pagina</span>
+     <span>${ev.pag_idx}</span>
+     <span style="color:var(--text3)">—</span> ${rw}`;
+  document.getElementById('eventoDesc').textContent=ev.desc||'';
+
+  // Flujo: VA → Pagina → Marco → Direccion Fisica
+  const flujo=[
+    {l:'Pag Virtual',v:`${ev.pag_idx}`},
+    {arrow:true},
+    {l:'Marco',v:`${ev.marco}`},
+    {arrow:true},
+    {l:'Dir. Fisica',v:ev.pa||'?'},
+  ];
+  document.getElementById('eventoFlujo').innerHTML=flujo.map(f=>
+    f.arrow
+      ?'<span class="flujo-arrow">→</span>'
+      :`<span class="flujo-box"><span style="color:var(--text3)">${f.l}: </span>${f.v}</span>`
+  ).join('');
+
+  const P=ev.P,D=ev.D,R=ev.R;
+  document.getElementById('eventoBits').innerHTML=`
+    <span class="bit ${P?'P1':'P0'}">P=${P?1:0} ${P?'en RAM':'en disco'}</span>
+    <span class="bit ${D?'D1':'D0'}">D=${D?1:0} ${D?'SUCIO':''}</span>
+    <span class="bit ${R?'R1':'R0'}">R=${R?1:0}</span>
+    ${ev.escritura?'<span class="badge write">escritura real</span>':''}
+    ${ev.tipo==='page_fault'||ev.tipo==='page_fault_reemplazo'?'<span class="badge disk">lectura de disco</span>':''}
+  `;
+
+  let vicHTML='';
+  if(ev.victima){
+    const v=ev.victima;
+    vicHTML=`<div class="opt-box">
+      <div class="opt-title">Victima — Algoritmo Optimo de Belady</div>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:7px">
+        <div style="width:10px;height:10px;border-radius:2px;background:${v.color}"></div>
+        <strong>${v.nombre}</strong> pag ${v.llave.split(':')[1]} marco ${v.marco}
+        ${v.sucio?'<span class="badge disk" style="font-size:10px">D=1 → escrita al disco</span>':'<span style="color:var(--green);font-size:10px">D=0 → descartada sin I/O</span>'}
+      </div>`;
+    if(ev.opt_analisis){
+      vicHTML+='<div class="opt-title" style="margin-bottom:3px">Analisis de uso futuro</div>';
+      const sorted=Object.entries(ev.opt_analisis)
+        .sort((a,b)=>{
+          const pa=a[1].prox==='NUNCA'?Infinity:parseInt(a[1].prox.replace('indice ',''));
+          const pb=b[1].prox==='NUNCA'?Infinity:parseInt(b[1].prox.replace('indice ',''));
+          return pb-pa;
+        });
+      for(const[k,v2]of sorted){
+        const isVic=v2.es_victima;
+        const prox=v2.prox;
+        const cls=prox==='NUNCA'?'nunca':prox.includes('indice')&&parseInt(prox.split(' ')[1])>15?'lejano':'cerca';
+        vicHTML+=`<div class="opt-row ${isVic?'vic':''}">
+          <div style="width:9px;height:9px;border-radius:2px;background:${v2.color};flex-shrink:0"></div>
+          <span>${v2.nombre} pag ${v2.pag}</span>
+          ${isVic?'<strong style="color:var(--red)">← VICTIMA</strong>':''}
+          <span class="opt-prox ${cls}">${prox}</span>
+        </div>`;
+      }
+    }
+    vicHTML+='</div>';
+  }
+  document.getElementById('opcionVictima').innerHTML=vicHTML;
 }
 
+// ── HISTORIAL ────────────────────────────────────────────────────────────────
 function renderHistorial(hist){
-  const el = document.getElementById('historial');
-  if(!hist || hist.length===0){ el.innerHTML=''; return; }
-  el.innerHTML = [...hist].reverse().map(h=>`
+  const el=document.getElementById('historial');
+  if(!hist||hist.length===0){el.innerHTML='';return;}
+  el.innerHTML=[...hist].reverse().map(h=>`
     <div class="hist-item ${h.tipo}">
       <div class="hist-paso">Paso ${h.paso+1} &nbsp;
         ${h.tipo==='tlb_hit'?'<span style="color:var(--green)">TLB HIT</span>':
@@ -1495,34 +1560,32 @@ function renderHistorial(hist){
         ${h.escritura?'<span style="color:var(--orange)">[W]</span>':'<span style="color:var(--green)">[R]</span>'}
       </div>
       <div class="hist-desc">${h.desc}</div>
-    </div>
-  `).join('');
+    </div>`).join('');
 }
 
+// ── STATS ────────────────────────────────────────────────────────────────────
 function renderStats(stats){
-  document.getElementById('statFaults').textContent  = stats.faults;
-  document.getElementById('statHitPct').textContent  = stats.tlb_hit_pct + '%';
-  document.getElementById('statDiskR').textContent   = stats.disk_reads;
-  document.getElementById('statDiskW').textContent   = stats.disk_writes;
-  document.getElementById('statAccesos').textContent = stats.accesos;
-  document.getElementById('tlbHitPct').textContent   = stats.tlb_hit_pct + '%';
-  document.getElementById('tlbMissN').textContent    = stats.tlb_misses;
-  const fp = stats.fault_pct;
-  const hp = stats.tlb_hit_pct;
-  document.getElementById('faultPct2').textContent   = fp + '%';
-  document.getElementById('hitPct2').textContent     = hp + '%';
-  document.getElementById('faultBar').style.width    = fp + '%';
-  document.getElementById('hitBar').style.width      = hp + '%';
+  document.getElementById('statFaults').textContent=stats.faults;
+  document.getElementById('statHitPct').textContent=stats.tlb_hit_pct+'%';
+  document.getElementById('statDiskR').textContent=stats.disk_reads;
+  document.getElementById('statDiskW').textContent=stats.disk_writes;
+  document.getElementById('statAccesos').textContent=stats.accesos;
+  document.getElementById('tlbHitPct').textContent=stats.tlb_hit_pct+'%';
+  document.getElementById('tlbMissN').textContent=stats.tlb_misses;
+  document.getElementById('faultPct2').textContent=stats.fault_pct+'%';
+  document.getElementById('hitPct2').textContent=stats.tlb_hit_pct+'%';
+  document.getElementById('faultBar').style.width=stats.fault_pct+'%';
+  document.getElementById('hitBar').style.width=stats.tlb_hit_pct+'%';
 }
 
 // ── UTILIDADES ───────────────────────────────────────────────────────────────
-function hexToRgba(hex, alpha){
+function hexToRgba(hex,alpha){
   try{
-    const r = parseInt(hex.slice(1,3),16);
-    const g = parseInt(hex.slice(3,5),16);
-    const b = parseInt(hex.slice(5,7),16);
+    const r=parseInt(hex.slice(1,3),16);
+    const g=parseInt(hex.slice(3,5),16);
+    const b=parseInt(hex.slice(5,7),16);
     return `rgba(${r},${g},${b},${alpha})`;
-  }catch(e){ return `rgba(110,118,129,${alpha})`; }
+  }catch(e){return `rgba(110,118,129,${alpha})`;}
 }
 </script>
 </body>
