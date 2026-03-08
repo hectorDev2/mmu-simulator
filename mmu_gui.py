@@ -613,6 +613,20 @@ class Motor:
             "evento": self.ultimo_evento,
             "historial": self.historial[-8:],
             "meta_actual": self.acceso_meta[self.paso] if 0 <= self.paso < len(self.acceso_meta) else {},
+            "proximas": [
+                {
+                    "idx": i,
+                    "llave": self.cadena[i],
+                    "proc_nombre": self.acceso_meta[i]["proc_nombre"],
+                    "proc_color":  self.acceso_meta[i]["proc_color"],
+                    "proc_icono":  self.acceso_meta[i]["proc_icono"],
+                    "pag_idx":     self.acceso_meta[i]["pag_idx"],
+                    "escritura":   self.acceso_meta[i]["escritura"],
+                    "desc":        self.acceso_meta[i]["desc"][:45],
+                }
+                for i in range(self.paso + 1,
+                               min(self.paso + 12, len(self.cadena)))
+            ],
         }
 
     def estado(self) -> dict:
@@ -1016,6 +1030,48 @@ select{background:var(--bg3);border:1px solid var(--border);color:var(--text);pa
 .splash p{color:var(--text2);max-width:500px;line-height:1.6}
 .splash .config-row{display:flex;gap:10px;align-items:center}
 
+/* PRÓXIMAS REFERENCIAS */
+.proximas-strip{border-bottom:1px solid var(--border);padding:8px 16px;flex-shrink:0;background:var(--bg)}
+.proximas-header{font-size:9px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px;display:flex;align-items:center;gap:8px}
+.proximas-scroll{display:flex;gap:5px;overflow-x:auto;padding-bottom:4px;align-items:stretch}
+.proximas-scroll::-webkit-scrollbar{height:3px}
+.prox-card{display:flex;flex-direction:column;align-items:center;gap:2px;padding:5px 7px;border-radius:6px;border:1px solid var(--border);border-top:2px solid;background:var(--bg2);min-width:64px;flex-shrink:0;font-size:10px;cursor:default;transition:all .2s}
+.prox-card:hover{background:var(--bg3)}
+.prox-step{font-size:8px;color:var(--text3)}
+.prox-icon{font-size:13px;line-height:1}
+.prox-pag{font-weight:700;font-size:11px}
+.prox-rw{font-size:8px;font-weight:700}
+.prox-sep{color:var(--text3);align-self:center;font-size:16px;flex-shrink:0;opacity:.5}
+
+/* RAM BAR 8 GB */
+.ram-bar-section{border-bottom:1px solid var(--border);padding:10px 16px;flex-shrink:0}
+.ram-bar-header{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+.ram-bar-title-txt{font-size:10px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.08em}
+.ram-bar-meta{font-size:10px;color:var(--text3)}
+.ram-bar-legend{display:flex;gap:8px;flex-wrap:wrap;margin-left:auto}
+.rbl-item{display:flex;align-items:center;gap:4px;font-size:9px;color:var(--text2)}
+.rbl-dot{width:8px;height:8px;border-radius:2px;flex-shrink:0}
+/* el contenedor externo: 8 GB total */
+.ram-bar-outer{width:100%;height:64px;border:2px solid var(--border);border-radius:6px;overflow:hidden;display:flex;position:relative;background:repeating-linear-gradient(45deg,var(--bg2),var(--bg2) 4px,var(--bg3) 4px,var(--bg3) 8px)}
+/* etiquetas de capacidad */
+.ram-bar-scale{display:flex;justify-content:space-between;font-size:8px;color:var(--text3);margin-top:3px;padding:0 2px}
+/* cada slot (marco físico) */
+.rfs{flex:1;border-right:1px solid rgba(255,255,255,.06);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;padding:3px 2px;transition:all .4s;position:relative;overflow:hidden;min-width:0}
+.rfs:last-child{border-right:none}
+.rfs.libre{background:transparent;color:rgba(255,255,255,.15)}
+.rfs.active{outline:2px solid var(--blue);outline-offset:-2px;z-index:2}
+.rfs.dirty{border-bottom:2px solid var(--orange)}
+.rfs-num{font-size:7px;opacity:.55;font-weight:700}
+.rfs-icon{font-size:12px;line-height:1}
+.rfs-name{font-size:7px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;text-align:center}
+.rfs-pag{font-size:7px;opacity:.75}
+.rfs-dbits{display:flex;gap:1px;margin-top:1px}
+.rfs-dbit{font-size:6px;padding:0 2px;border-radius:1px;font-weight:700}
+@keyframes rfsIn{0%{opacity:0;transform:scaleY(.3)}100%{opacity:1;transform:scaleY(1)}}
+@keyframes rfsOut{0%{filter:brightness(1)}50%{filter:brightness(2);background:rgba(248,81,73,.5)!important}100%{filter:brightness(1)}}
+.rfs.anim-in{animation:rfsIn .4s ease}
+.rfs.anim-out{animation:rfsOut .35s ease}
+
 /* SCROLLBAR */
 ::-webkit-scrollbar{width:5px;height:5px}
 ::-webkit-scrollbar-track{background:transparent}
@@ -1131,8 +1187,29 @@ select{background:var(--bg3);border:1px solid var(--border);color:var(--text);pa
       <div class="bits-row" id="eventoBits"></div>
       <div id="opcionVictima"></div>
     </div>
+
+    <!-- PRÓXIMAS REFERENCIAS -->
+    <div class="proximas-strip" id="proximasStrip" style="display:none">
+      <div class="proximas-header">
+        <span>Próximas referencias</span>
+        <span id="proximasContador" style="color:var(--text3)"></span>
+      </div>
+      <div class="proximas-scroll" id="proximasScroll"></div>
+    </div>
+
+    <!-- RAM BAR 8 GB -->
+    <div class="ram-bar-section" id="ramBarSection" style="display:none">
+      <div class="ram-bar-header">
+        <span class="ram-bar-title-txt">RAM — 8 GB</span>
+        <span class="ram-bar-meta" id="ramBarMeta"></span>
+        <div class="ram-bar-legend" id="ramBarLegend"></div>
+      </div>
+      <div class="ram-bar-outer" id="ramBarOuter"></div>
+      <div class="ram-bar-scale" id="ramBarScale"></div>
+    </div>
+
     <div class="ram-area">
-      <div class="ram-title" id="ramTitle">MEMORIA FISICA (RAM)</div>
+      <div class="ram-title" id="ramTitle">MARCOS FÍSICOS — DETALLE</div>
       <div class="ram-grid" id="ramGrid"></div>
     </div>
   </div>
@@ -1276,12 +1353,13 @@ function actualizarVista(est){
   estado=est;
   renderEvento(est.evento,est.meta_actual);
   renderRAM(est.marcos,est.evento);
+  renderRAMBar(est.marcos,est.num_marcos,est.evento,est.procesos);
+  renderProximas(est.proximas);
   renderTLB(est.tlb,est.tlb_cap,est.evento);
   renderPTBR(est.ptbr,est.tabla_procesos,est.evento);
   renderHistorial(est.historial);
   renderStats(est.stats);
   document.getElementById('pasoLabel').textContent=`${est.paso+1} / ${est.total_pasos} pasos`;
-  document.getElementById('ramTitle').textContent=`MEMORIA FISICA — ${est.num_marcos} marcos x 4 KB`;
   actualizarRamUsage(est.marcos,est.num_marcos);
 }
 
@@ -1576,6 +1654,88 @@ function renderStats(stats){
   document.getElementById('hitPct2').textContent=stats.tlb_hit_pct+'%';
   document.getElementById('faultBar').style.width=stats.fault_pct+'%';
   document.getElementById('hitBar').style.width=stats.tlb_hit_pct+'%';
+}
+
+// ── PRÓXIMAS REFERENCIAS ─────────────────────────────────────────────────────
+function renderProximas(proximas){
+  const strip=document.getElementById('proximasStrip');
+  if(!proximas||proximas.length===0){strip.style.display='none';return;}
+  strip.style.display='';
+  document.getElementById('proximasContador').textContent=`(${proximas.length} siguientes)`;
+  const html=proximas.map((p,i)=>{
+    const rw=p.escritura
+      ?'<span class="prox-rw" style="color:var(--orange)">WRITE</span>'
+      :'<span class="prox-rw" style="color:var(--green)">READ</span>';
+    const sep=i<proximas.length-1?'<span class="prox-sep">›</span>':'';
+    return `<div class="prox-card" style="border-top-color:${p.proc_color}" title="${p.desc}">
+      <span class="prox-step">Paso ${p.idx+1}</span>
+      <span class="prox-icon">${p.proc_icono}</span>
+      <span class="prox-pag" style="color:${p.proc_color}">Pag ${p.pag_idx}</span>
+      ${rw}
+    </div>${sep}`;
+  }).join('');
+  document.getElementById('proximasScroll').innerHTML=html;
+}
+
+// ── RAM BAR 8 GB ─────────────────────────────────────────────────────────────
+function renderRAMBar(marcos,num_marcos,evento,procesos){
+  const sec=document.getElementById('ramBarSection');
+  if(!marcos||marcos.length===0){sec.style.display='none';return;}
+  sec.style.display='';
+
+  const evMarco=evento?evento.marco:-1;
+  const totalGB=8;
+  const frameKB=4;
+  const totalUsedKB=num_marcos*frameKB;
+  const ocupados=marcos.filter(m=>!m.libre).length;
+  const pct=Math.round(ocupados/num_marcos*100);
+  const col=pct>85?'var(--red)':pct>60?'var(--orange)':'var(--green)';
+
+  document.getElementById('ramBarMeta').innerHTML=
+    `<span style="color:${col}">${ocupados}/${num_marcos} marcos ocupados</span>
+     &nbsp;·&nbsp;${totalUsedKB} KB de ${totalGB} GB total
+     &nbsp;·&nbsp;<span style="color:${col}">${pct}% de marcos en uso</span>`;
+
+  // Leyenda de apps activas
+  const appsEnRam=[...new Map(
+    marcos.filter(m=>!m.libre).map(m=>[m.nombre,{nombre:m.nombre,color:m.color,icono:m.icono}])
+  ).values()];
+  document.getElementById('ramBarLegend').innerHTML=appsEnRam.map(a=>
+    `<span class="rbl-item"><span class="rbl-dot" style="background:${a.color}"></span>${a.icono} ${a.nombre.substring(0,8)}</span>`
+  ).join('');
+
+  // Slots del barra
+  document.getElementById('ramBarOuter').innerHTML=marcos.map(m=>{
+    const isActive=m.num===evMarco;
+    if(m.libre){
+      return `<div class="rfs libre ${isActive?'active':''}">
+        <span class="rfs-num">M${m.num}</span>
+        <span style="font-size:10px;opacity:.2">□</span>
+        <span class="rfs-name" style="opacity:.2">libre</span>
+      </div>`;
+    }
+    const bg=hexToRgba(m.color,.55);
+    const borderTop=`3px solid ${m.color}`;
+    const dirtyClass=m.D?'dirty':'';
+    return `<div class="rfs ocupado ${isActive?'active':''} ${dirtyClass} anim-in"
+                 style="background:${bg};border-top:${borderTop}">
+      <span class="rfs-num" style="color:rgba(255,255,255,.55)">M${m.num}</span>
+      <span class="rfs-icon">${m.icono}</span>
+      <span class="rfs-name">${m.nombre.substring(0,6)}</span>
+      <span class="rfs-pag">P${m.pag_num}</span>
+      <div class="rfs-dbits">
+        ${m.D?'<span class="rfs-dbit" style="background:rgba(240,136,62,.5);color:var(--orange)">D</span>':''}
+        ${m.R?'<span class="rfs-dbit" style="background:rgba(210,153,34,.5);color:var(--yellow)">R</span>':''}
+      </div>
+    </div>`;
+  }).join('');
+
+  // Escala: 0 GB ... N/total GB ... 8 GB
+  const fraccionUsada=(totalUsedKB/1024/1024*100).toFixed(4);
+  document.getElementById('ramBarScale').innerHTML=
+    `<span>0 GB</span>
+     <span style="color:var(--text3)">${num_marcos} marcos = ${totalUsedKB} KB (${fraccionUsada}% de 8 GB)</span>
+     <span>8 GB</span>`;
 }
 
 // ── UTILIDADES ───────────────────────────────────────────────────────────────
