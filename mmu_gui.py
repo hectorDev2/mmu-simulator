@@ -238,6 +238,7 @@ class Motor:
         self.stats  = {"faults": 0, "tlb_hits": 0, "tlb_misses": 0,
                        "disk_reads": 0, "disk_writes": 0, "accesos": 0}
         self.ultimo_evento: dict = {}
+        self.snapshots: List[dict] = []      # pila para paso anterior
 
     def _pte(self, llave: str) -> PTE:
         if llave not in self.tabla:
@@ -497,6 +498,77 @@ class Motor:
 
         return cadena, meta
 
+    # ── snapshot / restaurar (para paso anterior) ───────────────────────────
+    def _snapshot(self) -> dict:
+        return {
+            "paso":           self.paso,
+            "stats":          dict(self.stats),
+            "historial":      [dict(h) for h in self.historial],
+            "ultimo_evento":  dict(self.ultimo_evento),
+            "tlb_entradas":   [{"llave": e.llave, "marco": e.marco, "valida": e.valida}
+                               for e in self.tlb.entradas],
+            "tlb_hits":       self.tlb.aciertos,
+            "tlb_misses":     self.tlb.fallos,
+            "tabla":          {k: {"marco": v.marco, "presente": v.presente,
+                                   "sucio": v.sucio, "referencia": v.referencia}
+                               for k, v in self.tabla.items()},
+            "marcos":         [{"num": m.num, "libre": m.libre, "pagina": m.pagina,
+                                "datos": m.volcar() if not m.libre else None}
+                               for m in self.ram],
+            "disco_llaves":   set(self.disco._archivos.keys()),
+            "disco_lecturas": self.disco.lecturas,
+            "disco_escrituras": self.disco.escrituras,
+        }
+
+    def _restaurar(self, snap: dict):
+        self.paso           = snap["paso"]
+        self.stats          = dict(snap["stats"])
+        self.historial      = [dict(h) for h in snap["historial"]]
+        self.ultimo_evento  = dict(snap["ultimo_evento"])
+        # TLB
+        self.tlb.entradas = []
+        for e in snap["tlb_entradas"]:
+            ent = EntradaTLB(e["llave"], e["marco"])
+            ent.valida = e["valida"]
+            self.tlb.entradas.append(ent)
+        self.tlb.aciertos = snap["tlb_hits"]
+        self.tlb.fallos   = snap["tlb_misses"]
+        # Tabla de páginas
+        self.tabla = {}
+        for k, v in snap["tabla"].items():
+            pte = PTE(k)
+            pte.marco      = v["marco"]
+            pte.presente   = v["presente"]
+            pte.sucio      = v["sucio"]
+            pte.referencia = v["referencia"]
+            self.tabla[k]  = pte
+        # Marcos de RAM
+        for ms in snap["marcos"]:
+            m = self.ram[ms["num"]]
+            m.libre  = ms["libre"]
+            m.pagina = ms["pagina"]
+            if not ms["libre"] and ms["datos"]:
+                m.cargar(ms["datos"])
+            else:
+                m.limpiar()
+        # Disco: eliminar archivos creados después del snapshot
+        llaves_borrar = set(self.disco._archivos.keys()) - snap["disco_llaves"]
+        for k in llaves_borrar:
+            import os as _os
+            ruta = self.disco._archivos.pop(k, None)
+            if ruta and _os.path.exists(ruta):
+                _os.remove(ruta)
+        self.disco.lecturas    = snap["disco_lecturas"]
+        self.disco.escrituras  = snap["disco_escrituras"]
+
+    def retroceder(self) -> dict:
+        with self.lock:
+            if not self.snapshots:
+                return self._estado_interno()
+            snap = self.snapshots.pop()
+            self._restaurar(snap)
+            return self._estado_interno()
+
     # ── inicializar simulacion ──────────────────────────────────────────────
     def inicializar(self, num_marcos: int):
         print(f"[INIT] Entrando con {num_marcos} marcos")
@@ -517,6 +589,7 @@ class Motor:
             self.stats      = {"faults":0,"tlb_hits":0,"tlb_misses":0,
                                "disk_reads":0,"disk_writes":0,"accesos":0}
             self.ultimo_evento = {}
+            self.snapshots  = []
             print(f"[INIT] Recolectando procesos...")
             procs_obj, procs_json = self.recolectar_procesos()
             print(f"[INIT] {len(procs_obj)} procesos recolectados")
@@ -642,6 +715,7 @@ class Motor:
             if self.paso >= len(self.cadena) - 1:
                 print(f"[AVANZAR] Ya terminado, retornando estado", file=sys.stderr, flush=True)
                 return self._estado_interno()
+            self.snapshots.append(self._snapshot())   # guardar antes de cambiar
             self.paso += 1
             idx   = self.paso
             llave = self.cadena[idx]
@@ -830,6 +904,10 @@ def api_estado():
 @app.route("/api/avanzar", methods=["POST"])
 def api_avanzar():
     return jsonify(motor.avanzar())
+
+@app.route("/api/retroceder", methods=["POST"])
+def api_retroceder():
+    return jsonify(motor.retroceder())
 
 @app.route("/api/reset", methods=["POST"])
 def api_reset():
@@ -1086,7 +1164,8 @@ select{background:var(--bg3);border:1px solid var(--border);color:var(--text);pa
   <h1>MMU Simulator <span>Belady Optimo</span></h1>
   <div class="controls">
     <button class="btn primary" id="btnIniciar" onclick="iniciar()">Iniciar simulacion</button>
-    <button class="btn" id="btnPaso" onclick="paso()" disabled>Siguiente paso</button>
+    <button class="btn" id="btnAtras" onclick="retroceder()" disabled>◀ Anterior</button>
+    <button class="btn" id="btnPaso" onclick="paso()" disabled>Siguiente ▶</button>
     <button class="btn" id="btnAuto" onclick="toggleAuto()" disabled>AUTO</button>
     <button class="btn danger" id="btnReset" onclick="reset()" style="display:none">Reiniciar</button>
     <span class="speed-label">Velocidad:</span>
@@ -1304,11 +1383,29 @@ async function paso(){
   const res=await fetch('/api/avanzar',{method:'POST'});
   const est=await res.json();
   actualizarVista(est);
+  actualizarBotones(est);
+}
+
+async function retroceder(){
+  if(!iniciado)return;
+  stopAuto();
+  const res=await fetch('/api/retroceder',{method:'POST'});
+  const est=await res.json();
+  actualizarVista(est);
+  actualizarBotones(est);
+}
+
+function actualizarBotones(est){
+  // "Anterior" habilitado si hay snapshots (paso > -1 tras iniciar)
+  document.getElementById('btnAtras').disabled=(est.paso<0);
+  // "Siguiente" habilitado si no terminó
+  document.getElementById('btnPaso').disabled=!!est.terminado;
+  document.getElementById('btnAuto').disabled=!!est.terminado;
   if(est.terminado){
-    document.getElementById('btnPaso').disabled=true;
     stopAuto();
-    document.getElementById('btnAuto').disabled=true;
     document.getElementById('pasoFinal').textContent='Simulacion completada';
+  } else {
+    document.getElementById('pasoFinal').textContent='';
   }
 }
 
